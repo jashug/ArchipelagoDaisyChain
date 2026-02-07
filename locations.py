@@ -54,8 +54,10 @@ class DaisyChainLocation(Location):
 def create_locations(world: DaisyChainWorld):
     player = world.player
 
-    def non_local_rule(item):
-        return item.player != player
+    def non_local_rule(allowed_category):
+        return lambda item: (
+            item.player != player or items.item_category(item.code) == allowed_category
+        )
 
     root_region = Region(ROOT_REGION_NAME, player, world.multiworld)
     world.multiworld.regions.append(root_region)
@@ -86,7 +88,7 @@ def create_locations(world: DaisyChainWorld):
                 for i, row in enumerate(block["locations"])
                 if location_index not in row
             )
-            location.item_rule = non_local_rule
+            location.item_rule = non_local_rule(items.ItemCategory.FUTURE)
             last_region.locations.append(location)
 
         new_region = Region(f"Past Region {region_index}", player, world.multiworld)
@@ -122,7 +124,7 @@ def create_locations(world: DaisyChainWorld):
             location.access_rule = access_all(
                 items.future_item_name(dep + last_future_item_index) for dep in logic
             )
-            location.item_rule = non_local_rule
+            location.item_rule = non_local_rule(items.ItemCategory.PAST)
             last_region.locations.append(location)
 
         new_region = Region(
@@ -169,5 +171,4 @@ def create_locations(world: DaisyChainWorld):
             player, location_name, LOCATION_NAME_TO_ID[location_name], root_region
         )
         location.progress_type = LocationProgressType.EXCLUDED
-        location.item_rule = non_local_rule
         root_region.locations.append(location)

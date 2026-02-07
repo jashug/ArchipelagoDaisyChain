@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 from typing import TYPE_CHECKING
 
 from BaseClasses import Item, ItemClassification
@@ -66,3 +67,18 @@ def create_all_items(world: DaisyChainWorld) -> None:
     world.multiworld.itempool += [
         world.create_item(FILLER_ITEM_NAME) for _ in range(world.filler_items)
     ]
+
+
+class ItemCategory(enum.Enum):
+    PAST = 0
+    FUTURE = 1
+    FILLER = 2
+
+
+def item_category(item_id):
+    if item_id is None or item_id == FILLER_ITEM_ID:
+        return ItemCategory.FILLER
+    elif item_id < FUTURE_ITEM_START:
+        return ItemCategory.PAST
+    else:
+        return ItemCategory.FUTURE
