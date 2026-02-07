@@ -20,14 +20,11 @@ Once I have something working, I will release an `.apworld` that can be installe
 
 Put this repository as a folder named `daisychain` in `C:\ProgramData\Archipelago\lib\worlds` (Or wherever your Archipelago data is already installed).
 
-I know I should set up type checking, but I'm not sure how to get types for the `Archipelago` libraries that
-this is being used as a plugin with.
-
 ---
 
 Current status:
 - Strategy sketched out (in my head)
-- World definition not started
+- World definition first draft
+  - Integrate with Universal Tracker (the randomized logic confuses it)
 - Proxy client not yet started
   - Proxy client hint forwarding (get basic check forwarding working first)
-- Integrate with Universal Tracker (the randomized logic confuses it)

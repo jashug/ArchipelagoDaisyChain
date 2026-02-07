@@ -1,5 +1,6 @@
 {
-  "game": "Daisy Chain Proxy",
+  "game": "DaisyChain Proxy",
   "minimum_ap_version": "0.6.5",
-  "authors": "Jasper Hugunin"
+  "authors": "Jasper Hugunin",
+  "world_version": "0.0.1"
 }

@@ -1,0 +1,7 @@
+[project]
+name = "ap-daisy-chain"
+version = "0.0.1"
+
+[tool.pyright]
+reportMissingImports = "information"
+# extraPaths = ["../.."] # Only have pyd, not enough
