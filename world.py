@@ -160,6 +160,14 @@ class DaisyChainWorld(World):
             "filler_item_id": items.FILLER_ITEM_ID,
             "filler_location_id_start": locations.FILLER_LOCATION_START,
             "filler_location_count": self.filler_locations,
+            "past_item_spoilers": [
+                {"player": item.location.player, "location": item.location.address}
+                for item in self.past_items
+            ],
+            "future_item_spoilers": [
+                {"player": item.location.player, "location": item.location.address}
+                for item in self.future_items
+            ],
             "version": 1,
         }
 

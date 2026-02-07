@@ -58,12 +58,14 @@ def create_item(world: DaisyChainWorld, name: str) -> DaisyChainItem:
 
 
 def create_all_items(world: DaisyChainWorld) -> None:
-    world.multiworld.itempool += [
+    world.past_items = [
         world.create_item(past_item_name(i)) for i in range(world.total_past_items)
     ]
-    world.multiworld.itempool += [
+    world.future_items = [
         world.create_item(future_item_name(i)) for i in range(world.total_future_items)
     ]
+    world.multiworld.itempool += world.past_items
+    world.multiworld.itempool += world.future_items
     world.multiworld.itempool += [
         world.create_item(FILLER_ITEM_NAME) for _ in range(world.filler_items)
     ]
