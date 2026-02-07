@@ -1,3 +1,4 @@
+import math
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -32,6 +33,22 @@ class FutureYaml(APPatch):
 
     def write_contents(self, opened_zipfile) -> None:
         opened_zipfile.writestr("DaisyChainFutureSlot.yaml", self.yaml_contents)
+
+
+def random_binomial(random, n, p):
+    """Number of successes with n iid probability p binary variables"""
+    return random.binomialvariate(n=n, p=p)
+
+
+def random_dual_uniform(random, n, p):
+    """A flatter distribution than binomial but still with expected value n * p"""
+    x = random.random()
+    q = 1 - p
+    if x < q:
+        y = x / q * p
+    else:
+        y = 1 - (1 - x) / p * q
+    return max(0, min(n, math.ceil(y * n - random.random())))
 
 
 class DaisyChainWorld(World):
@@ -71,11 +88,19 @@ class DaisyChainWorld(World):
             ]
         else:
             future_logic = self.options.future_logic["logic"]
+        random_count_fn = [random_binomial, random_dual_uniform][
+            int(self.options.future_logic_distribution)
+        ]
         self.future_logic = [
             {
                 "items": block["items"],
                 "locations": [
-                    {i for i in range(block["items"]) if random.random() < future_bias}
+                    set(
+                        random.sample(
+                            range(block["items"]),
+                            random_count_fn(random, block["items"], future_bias),
+                        )
+                    )
                     for _ in range(block["locations"])
                 ]
                 if isinstance(block["locations"], int)

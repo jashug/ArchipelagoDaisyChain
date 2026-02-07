@@ -2,7 +2,13 @@ from dataclasses import dataclass
 
 from schema import And, Or, Schema, Use
 
-from Options import OptionDict, PerGameCommonOptions, ProgressionBalancing, Range
+from Options import (
+    Choice,
+    OptionDict,
+    PerGameCommonOptions,
+    ProgressionBalancing,
+    Range,
+)
 
 
 class DaisyChainProgressionBalancing(ProgressionBalancing):
@@ -49,6 +55,17 @@ class FutureBias(Range):
     range_start = 0
     range_end = 100
     default = 75
+
+
+class FutureLogicDistribution(Choice):
+    """Using the default binomial distribution, all future locations tend to require very close to n * bias items.
+    The dual_uniform option is a flatter distribution which should give a larger spread in how many items are
+    required for future locations to be in logic."""
+
+    default = 0
+
+    option_binomial = 0
+    option_dual_uniform = 1
 
 
 class FutureLogic(OptionDict):
@@ -108,4 +125,5 @@ class DaisyChainOptions(PerGameCommonOptions):
     progression_balancing: DaisyChainProgressionBalancing
     past_logic: PastLogic
     future_bias: FutureBias
+    future_logic_distribution: FutureLogicDistribution
     future_logic: FutureLogic
