@@ -8,7 +8,7 @@ from worlds.Files import APPatch
 
 from . import items, locations
 from .constants import GAME_NAME, ROOT_REGION_NAME
-from .options import DaisyChainOptions
+from .options import LOGIC_DISTRIBUTION_NAMES, DaisyChainOptions
 
 
 class FutureYaml(APPatch):
@@ -183,7 +183,11 @@ class DaisyChainWorld(World):
                 yaml.write("        locations:\n")
                 for row in block["locations"]:
                     yaml.write(f"          - [{', '.join(str(dep) for dep in row)}]\n")
-            yaml.write("  # May change settings below, as well as future_bias\n")
+            yaml.write("  # May change settings below\n")
+            yaml.write(f"  future_bias: {int(self.options.future_bias)}\n")
+            yaml.write(
+                f"  future_logic_distribution: {LOGIC_DISTRIBUTION_NAMES[int(self.options.future_logic_distribution)]}\n"
+            )
             yaml.write("  future_logic:\n")
             yaml.write("    logic:\n")
             for block in self.future_logic:

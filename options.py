@@ -62,10 +62,13 @@ class FutureLogicDistribution(Choice):
     The dual_uniform option is a flatter distribution which should give a larger spread in how many items are
     required for future locations to be in logic."""
 
-    default = 0
+    default = 1
 
     option_binomial = 0
     option_dual_uniform = 1
+
+
+LOGIC_DISTRIBUTION_NAMES = ["binomial", "dual_uniform"]
 
 
 class FutureLogic(OptionDict):
