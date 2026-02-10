@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AP DaisyChain Client</title>
+    <link rel="modulepreload" href="https://unpkg.com/archipelago.js@2.0.4/dist/archipelago.min.js" />
+    <style>
+        /* Generic better CSS defaults, based in large part on https://www.joshwcomeau.com/css/custom-css-reset/ */
+        *,
+        *:before,
+        *:after {
+            box-sizing: border-box;
+        }
+
+        body {
+            line-height: 1.6
+        }
+
+        @media (prefers-reduced-motion: no-preference) {
+            html {
+                interpolate-size: allow-keywords;
+            }
+        }
+    </style>
+    <style>
+        h1,
+        h2 {
+            margin: 0
+        }
+
+        :target {
+            border: 2px solid black;
+        }
+
+        .server>input[type="url"] {
+            width: 55ch
+        }
+    </style>
+</head>
+
+<body>
+    <noscript>This page won't do anything with javascript disabled.</noscript>
+    <h1>Archipelago Daisy Chain Proxy Client</h1>
+    <!-- TODO: Add link to github repository -->
+
+    <h2>Server Connections</h2>
+    <div class="server">
+        <label for="past-server">Past: </label>
+        <input type="url" id="past-server" placeholder="SlotName:password@archipelago.gg:port" />
+        <button>Connect</button>
+        <span class="connection-info">Not Connected</span>
+    </div>
+    <div class="server">
+        <label for="present-server">Present: </label>
+        <input type="url" id="present-server" placeholder="SlotName:password@archipelago.gg:port" />
+        <button>Connect</button>
+        <span class="connection-info">Not Connected</span>
+    </div>
+    <div class="server">
+        <label for="future-server">Future: </label>
+        <input type="url" id="future-server" placeholder="SlotName:password@archipelago.gg:port" />
+        <button>Connect</button>
+        <span class="connection-info">Not Connected</span>
+    </div>
+
+    <div class="to-be-targeted">Hello</div>
+
+    <script type="module">
+        import { } from "https://unpkg.com/archipelago.js@2.0.4/dist/archipelago.min.js";
+    </script>
+
+    <script>"use strict";
+        let Archipelago;
+
+        import("https://unpkg.com/archipelago.js@2.0.4/dist/archipelago.min.js").then((module) => {
+            Archipelago = module;
+        });
+
+        window.addEventListener("hashchange", (event) => {
+            console.log(`hash changed: ${event.newURL}`);
+            let newURL = new URL(event.newURL);
+            let target_div = document.querySelector("body div.to-be-targeted");
+            target_div.id = new URL(event.newURL).hash
+        });
+
+        /*
+        We have three server slots: Past, Present, and Future.
+        The operation of each is very similar.
+
+        A server can be in one of five states:
+        - Disconnected
+        - Connecting (socket created)
+        - Waiting for RoomInfo (socket open event recieved)
+        - Authenticating (RoomInfo message recieved, Connect message sent)
+        - Connected (Connected message recieved)
+
+        Most of the rest of the world doesn't care about the difference between Connecting, Waiting for RoomInfo, and Authenticating,
+        with all three states indicating a live WebSocket that can not yet be sent checks/hints,
+        and may not have matching nonce/logic (and thus be rejected).
+        In these states, the server will also not be sending items and locations.
+
+        We want the ability to, from the outside, call a close method on the server to reset it to
+        Disconnected immediately, and prevent recieving further items/locations/hints.
+
+        Local data is very similar on the two links past-present and present-future.
+        Each pair maintains a shared nonce/logic, and can have each half connected or disconnected.
+
+        The nonce/logic is updated (and cached data cleared) if the nonce/logic doesn't match and
+        the other side is disconnected or this side has priority (in which case call a stored close on the other side).
+        While a connection is established, the logic won't change until close is called.
+        Each side can report an item recieved, a locationscout, a hint (split into hint item and hint location?).
+
+        When the location.hash changes: decode the hash to determine server addresses.
+        Disconnect servers which are not present in the new hash, or which are different from the current
+        values for servers not disconnected. Then connect servers which are disconnected that should be connected.
+
+        Pressing a connect/disconnect button changes the hash, using the other two parts directly.
+
+        From the main logic's perspective, each server is either connected or not.
+        The only part of the system that wants to know about in-progress connections is the logic to disconnect
+        from a server by onhashchange, and this can be encapsulated in the full close method.
+        */
+
+        /** a promise for either null or an IDBDatabase */
+        const cacheDb = new Promise((resolve, reject) => {
+            const request = indexedDB.open("archipelagoCache");
+            request.onerror = () => {
+                console.log("Could not open IndexedDB for data package cache");
+                resolve(null);
+            };
+            request.onsuccess = (event) => resolve(event.target.result);
+            request.onupgradeneeded = () => {
+                const db = event.target.result;
+                db.createObjectStore("DataPackage", { keyPath: ["game", "checksum"] });
+            };
+        });
+
+        const ServerStateKind = {
+            GOOD: 'good',
+            BAD: 'bad',
+            NEUTRAL: 'neutral',
+        }
+
+        const HAS_PROTOCOL = /^wss?:\/\//;
+
+        /** An object managing a server, such as the Past server slot */
+        class ServerSlot {
+            // Using public fields is slightly more flexible,
+            // and I don't need the encapsulation guarantees of private fields.
+            stringURL = null;
+            closeIsUnexpected = null;
+            socket = null;
+            datapackageChecksums = null;
+            idRanges = null;
+            onurlchange;
+            onstatechange;
+
+            constructor({ onurlchange, onstatechange }) {
+                this.onurlchange = onurlchange;
+                this.onstatechange = onstatechange;
+            }
+
+            #discardData() {
+                this.idRanges = null;
+                this.datapackageChecksums = null;
+            }
+
+            #closeSocket() {
+                this.#discardData();
+                this.closeIsUnexpected?.abort();
+                this.socket?.close();
+                this.socket = null;
+                this.closeIsUnexpected = null;
+            }
+
+            disconnect() {
+                this.#closeSocket()
+                this.stringURL = null;
+                this.onurlchange();
+                this.onstatechange(ServerStateKind.NEUTRAL, "Disconnected");
+            }
+
+            // N.B.: This behaves very similar to a setter for this.stringURL
+            connect(url) {
+                if (!url) {
+                    this.disconnect();
+                    return;
+                }
+                const stringURL = url.toString();
+                if (this.stringURL !== stringURL) {
+                    this.#closeSocket();
+                    this.stringURL = stringURL;
+                    this.onurlchange();
+                } else if (this.socket) {
+                    // Don't need to disconnect and reconnect if we are already connected to the right place.
+                    return;
+                }
+                const candidateURL = URL.parse(HAS_PROTOCOL.test(stringURL) ? stringURL : "wss://" + stringURL);
+                if (!candiateURL) {
+                    this.onstatechange(ServerStateKind.BAD, "Invalid URL");
+                    return;
+                }
+                // calling this.closeIsUnexpected.abort() prevents closeHandler from being called
+                this.closeIsUnexpected = new AbortController();
+                this.socket = new WebSocket(candidateURL);
+                this.socket.addEventListener("close", this.#closeHandler.bind(this), {
+                    once: true,
+                    signal: this.closeIsUnexpected.signal,
+                });
+                this.onstatechange(ServerStateKind.NEUTRAL, "Connecting...");
+            }
+
+            #closeHandler() {
+                if (this.datapackageChecksums) {
+                    // We recieved the RoomInfo packet: this was an anomalous closure
+                    this.#discardData();
+                    this.socket = null;
+                    this.closeIsUnexpected = null;
+                    this.onstatechange(ServerStateKind.BAD, "Server closed the connection unexpectedly");
+                    return;
+                }
+                let url = new URL(this.socket.url);
+                if (url.protocol === "ws:" || HAS_PROTOCOL.test(this.stringURL)) {
+                    this.socket = null;
+                    this.closeIsUnexpected = null;
+                    this.onstatechange(ServerStateKind.BAD, "Unable to connect");
+                    return;
+                }
+                // Fall back to ws from wss
+                url.protocol = "ws:";
+                this.socket = new WebSocket(url);
+                this.socket.addEventListener("close", this.#closeHandler.bind(this), {
+                    once: true,
+                    signal: this.closeIsUnexpected.signal,
+                });
+            }
+        };
+    </script>
+</body>
+
+</html>
