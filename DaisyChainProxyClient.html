@@ -85,6 +85,25 @@
             target_div.id = new URL(event.newURL).hash
         });
 
+        /**
+         * Takes an array, and performs an in-place random permutation.
+         * Copied from https://stackoverflow.com/a/2450976/2644368
+        */
+        function shuffle(array) {
+            let currentIndex = array.length;
+
+            // While there remain elements to shuffle...
+            while (currentIndex != 0) {
+
+                // Pick a remaining element...
+                let randomIndex = Math.floor(Math.random() * currentIndex);
+                currentIndex--;
+
+                // And swap it with the current element.
+                [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
+            }
+        };
+
         /*
         We have three server slots: Past, Present, and Future.
         The operation of each is very similar.
@@ -123,6 +142,16 @@
         from a server by onhashchange, and this can be encapsulated in the full close method.
         */
 
+        /**
+         * Not currently used by the server, may be used in the future for locking slots.
+         * I don't see much problem with reusing it for everyone using this client,
+         * but it could also be randomly generated and stored in localStorage in the future.
+        */
+        const GAME_NAME = "DaisyChain Proxy";
+        const CLIENT_UUID = "e42b6a67-536d-43db-a714-96482da24ec2";
+
+        const DATA_PACKAGE_STORE_NAME = "DataPackage";
+
         /** a promise for either null or an IDBDatabase */
         const cacheDb = new Promise((resolve, reject) => {
             const request = indexedDB.open("archipelagoCache");
@@ -133,9 +162,32 @@
             request.onsuccess = (event) => resolve(event.target.result);
             request.onupgradeneeded = () => {
                 const db = event.target.result;
-                db.createObjectStore("DataPackage", { keyPath: ["game", "checksum"] });
+                db.createObjectStore(DATA_PACKAGE_STORE_NAME, { keyPath: ["game", "checksum"] });
             };
         });
+
+        /** Returns undefined if key not found */
+        async function getDataPackage(key) {
+            const db = await cacheDb;
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(DATA_PACKAGE_STORE_NAME);
+                transaction.onabort = () => reject(new Error("transaction failed"));
+                const objectStore = transaction.objectStore(DATA_PACKAGE_STORE_NAME);
+                const request = objectStore.get(key);
+                request.onsuccess = (event) => resolve(event.target.result);
+            });
+        };
+
+        async function putDataPackage(record) {
+            const db = await cacheDb;
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(DATA_PACKAGE_STORE_NAME, "readwrite");
+                transaction.onabort = (event) => reject(event.target.error);
+                const objectStore = transaction.objectStore(DATA_PACKAGE_STORE_NAME);
+                const request = objectStore.put(record);
+                request.onsuccess = (event) => resolve(event.target.result);
+            });
+        };
 
         const ServerStateKind = {
             GOOD: 'good',
@@ -150,8 +202,9 @@
             // Using public fields is slightly more flexible,
             // and I don't need the encapsulation guarantees of private fields.
             stringURL = null;
-            closeIsUnexpected = null;
+            liveConnection = null;
             socket = null;
+            credentials = null;
             datapackageChecksums = null;
             idRanges = null;
             onurlchange;
@@ -162,21 +215,8 @@
                 this.onstatechange = onstatechange;
             }
 
-            #discardData() {
-                this.idRanges = null;
-                this.datapackageChecksums = null;
-            }
-
-            #closeSocket() {
-                this.#discardData();
-                this.closeIsUnexpected?.abort();
-                this.socket?.close();
-                this.socket = null;
-                this.closeIsUnexpected = null;
-            }
-
             disconnect() {
-                this.#closeSocket()
+                this.liveConnection?.abort()
                 this.stringURL = null;
                 this.onurlchange();
                 this.onstatechange(ServerStateKind.NEUTRAL, "Disconnected");
@@ -190,10 +230,10 @@
                 }
                 const stringURL = url.toString();
                 if (this.stringURL !== stringURL) {
-                    this.#closeSocket();
+                    this.liveConnection?.abort();
                     this.stringURL = stringURL;
                     this.onurlchange();
-                } else if (this.socket) {
+                } else if (this.liveConnection) {
                     // Don't need to disconnect and reconnect if we are already connected to the right place.
                     return;
                 }
@@ -202,39 +242,63 @@
                     this.onstatechange(ServerStateKind.BAD, "Invalid URL");
                     return;
                 }
-                // calling this.closeIsUnexpected.abort() prevents closeHandler from being called
-                this.closeIsUnexpected = new AbortController();
-                this.socket = new WebSocket(candidateURL);
-                this.socket.addEventListener("close", this.#closeHandler.bind(this), {
-                    once: true,
-                    signal: this.closeIsUnexpected.signal,
-                });
+                this.credentials = { slotName: candidateURL.username, password: candidateURL.password };
+                this.liveConnection = new AbortController();
+                this.liveConnection.signal.addEventListener("abort", () => {
+                    this.liveConnection = null;
+                    this.idRanges = null;
+                    this.datapackageChecksums = null;
+                    this.socket.close();
+                    this.socket = null;
+                    this.credentials = null;
+                }, { once: true });
+                this.socket = this.#createSocket(candidateURL);
                 this.onstatechange(ServerStateKind.NEUTRAL, "Connecting...");
+            }
+
+            #createSocket(url) {
+                const socket = new WebSocket(url);
+                socket.addEventListener("close", this.#closeHandler.bind(this), {
+                    once: true,
+                    signal: this.liveConnection.signal,
+                });
+                socket.addEventListener("open", this.#openHandler.bind(this), {
+                    once: true,
+                    signal: this.liveConnection.signal,
+                });
+                return socket;
             }
 
             #closeHandler() {
                 if (this.datapackageChecksums) {
                     // We recieved the RoomInfo packet: this was an anomalous closure
-                    this.#discardData();
-                    this.socket = null;
-                    this.closeIsUnexpected = null;
-                    this.onstatechange(ServerStateKind.BAD, "Server closed the connection unexpectedly");
+                    this.liveConnection.abort();
+                    this.onstatechange(ServerStateKind.BAD, "Connection closed unexpectedly");
                     return;
                 }
                 let url = new URL(this.socket.url);
                 if (url.protocol === "ws:" || HAS_PROTOCOL.test(this.stringURL)) {
-                    this.socket = null;
-                    this.closeIsUnexpected = null;
+                    this.liveConnection.abort();
                     this.onstatechange(ServerStateKind.BAD, "Unable to connect");
                     return;
                 }
                 // Fall back to ws from wss
                 url.protocol = "ws:";
-                this.socket = new WebSocket(url);
-                this.socket.addEventListener("close", this.#closeHandler.bind(this), {
-                    once: true,
-                    signal: this.closeIsUnexpected.signal,
-                });
+                this.socket = this.#createSocket(url);
+            }
+
+            #openHandler() {
+                this.socket.send(JSON.stringify({
+                    cmd: "Connect",
+                    name: this.credentials.slotName,
+                    game: GAME_NAME,
+                    password: this.credentials.password,
+                    slot_data: true,
+                    items_handling: 0b111 /* All items */,
+                    uuid: CLIENT_UUID,
+                    tags: ["NoText"],
+                    version: { major: 0, minor: 6, build: 5, class: "Version" },
+                }));
             }
         };
     </script>
