@@ -26,16 +26,33 @@
     </style>
     <style>
         h1,
-        h2 {
+        h2,
+        h3 {
             margin: 0
         }
 
-        :target {
-            border: 2px solid black;
+        .server {
+            border: 1px solid black;
+            padding-inline: 0.5em;
+            padding-block: 0.2em;
         }
 
-        .server>input[type="url"] {
-            width: 55ch
+        .server-inputs {
+            display: flex;
+            flex-flow: row wrap;
+        }
+
+        .server-inputs>label {
+            margin-inline-end: 0.5em;
+        }
+
+        .server-address {
+            width: 25ch
+        }
+
+        .username,
+        .password {
+            width: 16ch
         }
     </style>
 </head>
@@ -45,27 +62,54 @@
     <h1>Archipelago Daisy Chain Proxy Client</h1>
     <!-- TODO: Add link to github repository -->
 
-    <h2>Server Connections</h2>
+    <h3>Past:</h3>
     <div class="server">
-        <label for="past-server">Past: </label>
-        <input type="url" id="past-server" placeholder="SlotName:password@archipelago.gg:port" />
-        <button>Connect</button>
-        <span class="connection-info">Not Connected</span>
+        <div class="server-inputs">
+            <label for="past-server">Server:
+                <input type="url" id="past-server" class="server-address"
+                    placeholder="wss://archipelago.gg:port" /></label>
+            <label for="past-slot">Slot:
+                <input type="text" id="past-slot" class="username" placeholder="SlotName" /></label>
+            <label for="past-password">Password:
+                <input type="password" id="past-password" class="password" placeholder="password" /></label>
+        </div>
+        <div>
+            <button id="past-button">Connect</button>
+            <span id="past-status" class="connection-info">Not Connected</span>
+        </div>
     </div>
+    <h3>Present:</h3>
     <div class="server">
-        <label for="present-server">Present: </label>
-        <input type="url" id="present-server" placeholder="SlotName:password@archipelago.gg:port" />
-        <button>Connect</button>
-        <span class="connection-info">Not Connected</span>
+        <div class="server-inputs">
+            <label for="present-server">Server:
+                <input type="url" id="present-server" class="server-address"
+                    placeholder="wss://archipelago.gg:port" /></label>
+            <label for="present-slot">Slot:
+                <input type="text" id="present-slot" class="username" placeholder="SlotName" /></label>
+            <label for="present-password">Password:
+                <input type="password" id="present-password" class="password" placeholder="password" /></label>
+        </div>
+        <div>
+            <button id="present-button">Connect</button>
+            <span id="present-status" class="connection-info">Not Connected</span>
+        </div>
     </div>
+    <h3>Future:</h3>
     <div class="server">
-        <label for="future-server">Future: </label>
-        <input type="url" id="future-server" placeholder="SlotName:password@archipelago.gg:port" />
-        <button>Connect</button>
-        <span class="connection-info">Not Connected</span>
+        <div class="server-inputs">
+            <label for="future-server">Server:
+                <input type="url" id="future-server" class="server-address"
+                    placeholder="wss://archipelago.gg:port" /></label>
+            <label for="future-slot">Slot:
+                <input type="text" id="future-slot" class="username" placeholder="SlotName" /></label>
+            <label for="future-password">Password:
+                <input type="password" id="future-password" class="password" placeholder="password" /></label>
+        </div>
+        <div>
+            <button id="future-button">Connect</button>
+            <span id="future-status" class="connection-info">Not Connected</span>
+        </div>
     </div>
-
-    <div class="to-be-targeted">Hello</div>
 
     <script type="module">
         import { } from "https://unpkg.com/archipelago.js@2.0.4/dist/archipelago.min.js";
@@ -167,13 +211,13 @@
         });
 
         /** Returns undefined if key not found */
-        async function getDataPackage(key) {
+        async function getDataPackage({ game, checksum }) {
             const db = await cacheDb;
             return new Promise((resolve, reject) => {
                 const transaction = db.transaction(DATA_PACKAGE_STORE_NAME);
                 transaction.onabort = () => reject(new Error("transaction failed"));
                 const objectStore = transaction.objectStore(DATA_PACKAGE_STORE_NAME);
-                const request = objectStore.get(key);
+                const request = objectStore.get([game, checksum]);
                 request.onsuccess = (event) => resolve(event.target.result);
             });
         };
@@ -189,11 +233,50 @@
             });
         };
 
+        function sumOfLogic(logic) {
+            let items = 0;
+            let locations = 0;
+            for (const block of logic) {
+                items += block.items;
+                locations += block.locations.length;
+            }
+            return { items, locations };
+        }
+
+        function fromRange(id, { start, count }) {
+            const index = id - start;
+            if (0 <= index && index < count) {
+                return { index };
+            } else {
+                return null;
+            }
+        }
+
+        function toRange(index, { start, count }) {
+            console.assert(0 <= index && index < count);
+            return index + start;
+        }
+
+        function logicEqual(logic1, logic2) {
+            if (logic1.length !== logic2.length) return false;
+            for (const blockIndex of logic1.keys()) {
+                const block1 = logic1[blockIndex];
+                const block2 = logic2[blockIndex];
+                if (block1.items !== block2.items) return false;
+                if (block1.locations.length !== block2.locations.length) return false;
+                for (const rowIndex of block1.locations.keys()) {
+                    const row1 = new Set(block1.locations[rowIndex]);
+                    const row2 = new Set(block2.locations[rowIndex]);
+                    if (row1.symmetricDifference(row2).length !== 0) return false;
+                }
+            }
+        }
+
         const ServerStateKind = {
             GOOD: 'good',
             BAD: 'bad',
             NEUTRAL: 'neutral',
-        }
+        };
 
         const HAS_PROTOCOL = /^wss?:\/\//;
 
@@ -205,14 +288,18 @@
             liveConnection = null;
             socket = null;
             credentials = null;
-            datapackageChecksums = null;
-            idRanges = null;
+            roomInfo = null;
+            authenticated = null;
             onurlchange;
             onstatechange;
+            connectPast;
+            connectFuture;
 
-            constructor({ onurlchange, onstatechange }) {
+            constructor({ onurlchange, onstatechange, connectPast, connectFuture }) {
                 this.onurlchange = onurlchange;
                 this.onstatechange = onstatechange;
+                this.connectPast = connectPast;
+                this.connectFuture = connectFuture;
             }
 
             disconnect() {
@@ -222,7 +309,7 @@
                 this.onstatechange(ServerStateKind.NEUTRAL, "Disconnected");
             }
 
-            // N.B.: This behaves very similar to a setter for this.stringURL
+            // N.B. This behaves very similar to a setter for this.stringURL
             connect(url) {
                 if (!url) {
                     this.disconnect();
@@ -238,7 +325,7 @@
                     return;
                 }
                 const candidateURL = URL.parse(HAS_PROTOCOL.test(stringURL) ? stringURL : "wss://" + stringURL);
-                if (!candiateURL) {
+                if (!candiateURL || candidateURL.hash) {
                     this.onstatechange(ServerStateKind.BAD, "Invalid URL");
                     return;
                 }
@@ -246,8 +333,6 @@
                 this.liveConnection = new AbortController();
                 this.liveConnection.signal.addEventListener("abort", () => {
                     this.liveConnection = null;
-                    this.idRanges = null;
-                    this.datapackageChecksums = null;
                     this.socket.close();
                     this.socket = null;
                     this.credentials = null;
@@ -262,15 +347,15 @@
                     once: true,
                     signal: this.liveConnection.signal,
                 });
-                socket.addEventListener("open", this.#openHandler.bind(this), {
-                    once: true,
+                // We don't actually have anything to do onopen: wait for the server to send RoomInfo.
+                socket.addEventListener("message", this.#messageHandler.bind(this), {
                     signal: this.liveConnection.signal,
                 });
                 return socket;
             }
 
             #closeHandler() {
-                if (this.datapackageChecksums) {
+                if (this.roomInfo) {
                     // We recieved the RoomInfo packet: this was an anomalous closure
                     this.liveConnection.abort();
                     this.onstatechange(ServerStateKind.BAD, "Connection closed unexpectedly");
@@ -287,19 +372,468 @@
                 this.socket = this.#createSocket(url);
             }
 
-            #openHandler() {
-                this.socket.send(JSON.stringify({
-                    cmd: "Connect",
-                    name: this.credentials.slotName,
-                    game: GAME_NAME,
-                    password: this.credentials.password,
-                    slot_data: true,
-                    items_handling: 0b111 /* All items */,
-                    uuid: CLIENT_UUID,
-                    tags: ["NoText"],
-                    version: { major: 0, minor: 6, build: 5, class: "Version" },
-                }));
+            getNextDataPackage() {
+                if (this.roomInfo.gamesToFetch.length === 0) {
+                    console.assert(this.roomInfo.games.every((game) => this.roomInfo.dataPackages.has(game)));
+                    this.socket.send(JSON.stringify({
+                        cmd: "Connect",
+                        name: this.credentials.slotName,
+                        game: GAME_NAME,
+                        password: this.credentials.password,
+                        slot_data: true,
+                        items_handling: 0b111 /* All items */,
+                        uuid: CLIENT_UUID,
+                        tags: ["NoText"],
+                        version: { major: 0, minor: 6, build: 5, class: "Version" },
+                    }));
+                    this.onstatechange(ServerStateKind.NEUTRAL, "Authenticating...");
+                    return;
+                }
+                const game = this.roomInfo.gamesToFetch.pop();
+                console.assert(!this.roomInfo.dataPackages.has(game));
+                const requestFromServer = () => {
+                    this.socket.send(JSON.stringify({
+                        cmd: "GetDataPackage",
+                        games: [game],
+                    }));
+                };
+                const checksum = this.roomInfo.dataPackageChecksums.get(game);
+                if (checksum) {
+                    const signal = this.liveConnection.signal;
+                    getDataPackage([game, checksum]).then((result) => {
+                        if (signal.aborted) return;
+                        if (result) {
+                            this.roomInfo.dataPackages.set(game, {
+                                locationIdToName: result.locationIdToName,
+                                itemIdToName: result.itemIdToName
+                            });
+                            this.getNextDataPackage();
+                        } else {
+                            requestFromServer();
+                        }
+                    }, (error) => {
+                        if (signal.aborted) return;
+                        this.liveConnection.abort();
+                        this.onstatechange(ServerStateKind.BAD, "Error while looking up data package in cache");
+                    });
+                } else {
+                    requestFromServer();
+                }
             }
+
+            #messageHandler(event) {
+                // Server could send a binary message, which would turn into a Blob or ArrayBuffer here.
+                // Shouldn't happen, ignore for now.
+                const handlers = new Map([
+                    ["RoomInfo", this.#roomInfoHandler],
+                    ["ConnectionRefused", (packet) => {
+                        this.liveConnection.abort();
+                        this.onstatechange(ServerStateKind.BAD, `Connection refused: ${packet.errors}`);
+                    }],
+                    ["Connected", this.#connectedPacketHandler],
+                    ["ReceivedItems", (packet) => { this.authenticated.receiveItems(packet.index, packet.items); }],
+                    ["LocationInfo", (packet) => { this.authenticated.scoutLocations(packet.locations); }],
+                    ["RoomUpdate", (packet) => {
+                        // Can include permissions, hint_cost, location_check_points, hint_points, players, checked_locations,
+                        // of which we only care about checked_locations.
+                        if (packet.checked_locations !== undefined) {
+                            this.authenticated.addCheckedLocations(packet.checked_locations);
+                        }
+                    }],
+                    ["PrintJSON", (packet) => { /* We are ignoring text messages */ }],
+                    ["DataPackage", (packet) => {
+                        for (const [game, data] of Object.entries(packet.data.games)) {
+                            const itemIdToName = new Map(Object.entries(data.item_name_to_id).map(([name, id]) => [id, name]));
+                            const locationIdToName = new Map(Object.entries(data.location_name_to_id).map(([name, id]) => [id, name]));
+                            this.roomInfo.dataPackages.set(game, { itemIdToName, locationIdToName });
+                            if (data.checksum) {
+                                putDataPackage({ game: game, checksum: data.checksum, itemIdToName, locationIdToName });
+                            }
+                        }
+                        this.getNextDataPackage();
+                    }],
+                    ["Bounced", (packet) => { /* Not expecting any bounces */ }],
+                    ["InvalidPacket", (packet) => {
+                        console.log(`Server complained of invalid ${packet.cmd} packet (${packet.type}): ${packet.text}`);
+                        // Should this abort the connection?
+                    }],
+                    ["Retrieved", (packet) => {
+                        const hints = packet.keys[this.authenticated.hintKey]
+                        if (hints !== undefined) {
+                            this.authenticated.setHints(hints);
+                        }
+                    }],
+                    ["SetReply", (packet) => {
+                        if (packet.key === this.authenticated.hintKey) {
+                            this.authenticated.setHints(packet.value);
+                        }
+                    }],
+                ]);
+                const defaultHandler = (packet) => {
+                    console.log(`Unrecognized packet type ${packet.cmd}`);
+                };
+                const packets = JSON.parse(event.data);
+                for (const packet of packets) {
+                    (handlers.getOrDefault(packet.cmd) || defaultHandler).call(this, packet);
+                }
+            }
+
+            #roomInfoHandler(packet) {
+                if (this.roomInfo) {
+                    this.liveConnection.abort();
+                    this.onstatechange(ServerStateKind.BAD, "Protocol violation: double RoomInfo packet");
+                    return;
+                }
+                shuffle(packet.games);
+                this.roomInfo = {
+                    games: packet.games,
+                    gamesToFetch: packet.games,
+                    dataPackages: new Map(),
+                    dataPackageChecksums: new Map(Object.entries(packet.datapackage_checksums))
+                }
+                this.liveConnection.signal.addEventListener("abort",
+                    () => { this.roomInfo = null },
+                    { once: true },
+                );
+                this.getNextDataPackage();
+                this.onstatechange(ServerStateKind.NEUTRAL, "Downloading data packages...");
+            }
+
+            #connectedPacketHandler(packet) {
+                if (this.authenticated) {
+                    this.liveConnection.abort();
+                    this.onstatechange(ServerStateKind.BAD, "Protocol violation: double connected packet");
+                    return;
+                }
+                const slotData = packet.slot_data;
+                const slotInfo = new Map(Object.entries(packet.slot_info));
+                let gameStatePast = null;
+                if (connectPast) {
+                    gameStatePast = connectPast({
+                        nonce: slotData.past_nonce,
+                        logic: slotData.past_logic,
+                        spoilers: slotData.past_item_spoilers,
+                        dataPackages: this.dataPackages,
+                        slotInfo: this.slotInfo,
+                        callbacks: {
+                            evict: () => this.liveConnection.abort(),
+                            check: (locations) => {
+                                const locationIds = Array.from(locations.values().map((index) =>
+                                    toRange(index, this.authenticated.idRanges.past.location)
+                                ));
+                                this.socket.send(JSON.stringify([
+                                    { cmd: "LocationScouts", locations: locationIds, create_as_hint: 0 },
+                                    { cmd: "LocationChecks", locations: locationIds },
+                                ]));
+                            },
+                        },
+                    });
+                    if (!gameStatePast) {
+                        this.liveConnection.abort();
+                        this.onstatechange("Logic mismatch");
+                        return;
+                    }
+                    this.liveConnection.signal.addEventListener("abort",
+                        gameStatePast.disconnect.bind(gameStatePast),
+                        { once: true },
+                    );
+                }
+                let gameStateFuture = null;
+                if (connectFuture) {
+                    gameStateFuture = connectFuture({
+                        nonce: slotData.nonce,
+                        logic: slotData.future_logic,
+                        spoilers: slotData.future_item_spoilers,
+                        dataPackages: this.dataPackages,
+                        slotInfo: this.slotInfo,
+                        callbacks: {
+                            evict: () => this.liveConnection.abort(),
+                            check: (locations) => {
+                                const locationIds = Array.from(locations.values().map((index) =>
+                                    toRange(index, this.authenticated.idRanges.future.location)
+                                ));
+                                this.socket.send(JSON.stringify([
+                                    { cmd: "LocationScouts", locations: locationIds, create_as_hint: 0 },
+                                    { cmd: "LocationChecks", locations: locationIds },
+                                ]));
+                            },
+                        },
+                    });
+                    if (!gameStateFuture) {
+                        this.liveConnection.abort();
+                        this.onstatechange(ServerStateKind.BAD, "Logic mismatch");
+                        return;
+                    }
+                    this.liveConnection.signal.addEventListener("abort",
+                        gameStateFuture.disconnect.bind(gameStateFuture),
+                        { once: true },
+                    );
+                }
+                this.authenticated = new ServerSlot.#AuthBlock(packet.team, packet.slot, slotData, gameStatePast, gameStateFuture);
+                this.liveConnection.signal.addEventListener("abort",
+                    () => { this.authenticated = null; },
+                    { once: true },
+                );
+                this.authenticated.addCheckedLocations(packet.checked_locations);
+                this.onstatechange(ServerStateKind.GOOD, "Connected");
+            }
+
+            static #AuthBlock = class {
+                teamNumber;
+                slotNumber;
+                hintKey;
+                itemIndex = 0;
+                gameStatePast;
+                gameStateFuture;
+                idRanges;
+
+                constructor(teamNumber, slotNumber, slotData, gameStatePast, gameStateFuture) {
+                    this.teamNumber = teamNumber;
+                    this.slotNumber = slotNumber;
+                    this.hintKey = `_read_hints_${packet.team}_${packet.slot}`;
+                    this.gameStatePast = gameStatePast;
+                    this.gameStateFuture = gameStateFuture;
+                    // Because past logic gives the transpose matrix, swap items and locations.
+                    const { items: past_location_count, locations: past_item_count } = sumOfLogic(slotData.past_logic);
+                    const { items: future_item_count, locations: future_location_count } = sumOfLogic(slotData.future_logic);
+                    this.idRanges = {
+                        past: {
+                            item: { start: slotData.past_item_id_start, count: past_item_count },
+                            location: { start: slotData.past_location_id_start, count: past_location_count },
+                        },
+                        future: {
+                            item: { start: slotData.future_item_id_start, count: future_item_count },
+                            location: { start: slotData.future_location_id_start, count: future_location_count },
+                        },
+                        filler: {
+                            item_id: slotData.filler_item_id,
+                            location: { start: slotData.filler_location_id_start, count: slotData.filler_location_count },
+                        },
+                    };
+                }
+
+                receiveItems(index, items) {
+                    const reset = (index === 0);
+                    if (reset) {
+                        this.itemIndex = 0;
+                    }
+                    if (index !== this.itemIndex) {
+                        this.socket.send(JSON.stringify({
+                            cmd: "Sync",
+                        }));
+                        this.gameStatePast?.resendChecks();
+                        this.gameStateFuture?.resendChecks();
+                    }
+                    this.itemIndex += items.length;
+                    const pastItems = [];
+                    const futureItems = [];
+                    for (const item of items) {
+                        const pastIndex = fromRange(item.item, this.idRanges.past.item);
+                        if (pastIndex) {
+                            pastItems.push({ index: pastIndex.index, locationId: item.location, slotNumber: item.player });
+                        }
+                        const futureIndex = fromRange(item.item, this.idRanges.future.item);
+                        if (futureIndex) {
+                            futureItems.push({ index: futureIndex.index, locationId: item.location, slotNumber: item.player });
+                        }
+                    }
+                    this.gameStatePast?.receiveItems(pastItems, reset);
+                    this.gameStateFuture?.receiveItems(futureItems, reset);
+                }
+
+                scoutLocations(locations) {
+                    const pastLocations = [];
+                    const futureLocations = [];
+                    for (const location in locations) {
+                        const pastIndex = fromRange(location.location, this.idRanges.past.location);
+                        if (pastIndex) {
+                            pastLocations.push({ index: pastIndex.index, itemId: location.item, slotNumber: location.player, flags: location.flags });
+                        }
+                        const futureIndex = fromRange(location.location, this.idRanges.future.location);
+                        if (futureIndex) {
+                            futureLocations.push({ index: futureIndex.index, itemId: location.item, slotNumber: location.player, flags: location.flags });
+                        }
+                    }
+                    this.gameStatePast?.scoutLocations(pastLocations);
+                    this.gameStateFuture?.scoutLocations(futureLocations);
+                }
+
+                addCheckedLocations(locations) {
+                    const pastLocations = [];
+                    const futureLocations = [];
+                    for (const location in locations) {
+                        const pastIndex = fromRange(location, this.idRanges.past.location);
+                        if (pastIndex) {
+                            pastLocations.push(pastIndex.index);
+                        }
+                        const futureIndex = fromRange(location, this.idRanges.future.location);
+                        if (futureIndex) {
+                            futureLocations.push(futureIndex.index);
+                        }
+                    }
+                    this.gameStatePast?.addCheckedLocations(pastLocations);
+                    this.gameStateFuture?.addCheckedLocations(futureLocations);
+                }
+
+                setHints(hints) {
+                    // TODO
+                }
+            }
+        };
+
+        class HalfGameState {
+            // Map slotNumber to {name, game}
+            slotInfo;
+            // Array of item index to spoiled location
+            spoilers;
+            // Map game to { locationIdToName: Map, itemIdToName: Map }
+            dataPackages = new Map();
+            // Map location index to {slotNumber, itemId, flags}
+            scoutedLocations = new Map();
+            checkedLocations = new Set();
+            // Map item index to {slotNumber, locationId}
+            itemFirstFoundLocations = new Map();
+            // List of {index, slotNumber, locationIndex}
+            receivedItems = [];
+            firstReceivedItems = [];
+            hints = {
+                locations: new Map(),
+                items: new Map(),
+            };
+            callbacks;
+            getOtherHalf;
+
+            constructor(slotInfo, spoilers, dataPackages, callbacks, getOtherHalf) {
+                this.slotInfo = slotInfo;
+                this.spoilers = spoilers;
+                this.dataPackages = dataPackages;
+                this.callbacks = callbacks;
+                this.getOtherHalf = getOtherHalf;
+            }
+
+            disconnect() {
+                this.callbacks = null;
+            }
+
+            receiveItems(items, reset) {
+                if (reset) {
+                    this.receivedItems = [];
+                    this.firstReceivedItems = [];
+                    this.itemFirstFoundLocations = new Map();
+                }
+                for (const item of items) {
+                    this.receivedItems.push(item);
+                    if (!this.itemFirstFoundLocations.has(item.index)) {
+                        this.firstReceivedItems.push(item);
+                        this.itemFirstFoundLocations.set(item.index, {
+                            slotNumber: item.slotNumber,
+                            locationId: item.locationId,
+                        });
+                    }
+                }
+                const otherHalf = this.getOtherHalf();
+                if (otherHalf?.callbacks) {
+                    const locations = Array.from(items.values().map((item) => item.index));
+                    otherHalf.callbacks?.check(locations);
+                }
+
+                // TODO: signal updated items (maybe all received items, maybe only first received items)
+            }
+
+            addCheckedLocations(locations) {
+                for (const location of locations) {
+                    this.checkedLocations.add(location);
+                }
+                // TODO: signal checked locations changed
+            }
+
+            scoutLocations(locations) {
+                for (const location of locations) {
+                    this.locations.set(location.index, {
+                        slotNumber: location.slotNumber,
+                        itemId: location.itemId,
+                        flags: location.flags,
+                    });
+                }
+                // TODO: signal scouted locations changed
+            }
+
+            setHints(hints) {
+                // TODO
+            }
+
+            resendChecks() {
+                const otherHalf = this.getOtherHalf();
+                if (otherHalf) {
+                    const locations = Array.from(otherHalf.firstReceivedItems.values().map((item) => item.index));
+                    this.callbacks.check(locations);
+                }
+            }
+        }
+
+        // TODO: Goal
+
+        /** Encapsulate the game state between two communicating server halves.
+         *
+         * Locations of one are items of the other, and vice versa.
+         */
+
+        class LogicPair {
+            logic = null;
+            primaryHalf = null;
+            secondaryHalf = null;
+
+            connectPrimary({
+                nonce,
+                logic,
+                spoilers,
+                dataPackages,
+                slotInfo,
+                callbacks,
+            }) {
+                if (this.logic && (this.logic.nonce !== nonce || !logicEqual(this.logic.logic, logic))) {
+                    this.secondaryHalf?.callbacks?.evict();
+                    this.secondaryHalf = null;
+                }
+                this.logic = { nonce, logic };
+                return new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.secondaryHalf; });
+            }
+
+            connectSecondary() {
+                if (this.logic && (this.logic.nonce !== nonce || !logicEqual(this.logic.logic, logic))) {
+                    return null;
+                }
+                if (!this.logic) {
+                    this.logic = { nonce, logic };
+                }
+                return new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.primaryHalf; });
+            }
+        };
+
+        const pastConnection = new LogicPair();
+        const futureConnection = new LogicPair();
+
+        const pastSlot = new ServerSlot({
+            onurlchange: () => { },
+            onstatechange: (kind, description) => { },
+            connectPast: null,
+            connectFuture: pastConnection.connectSecondary.bind(pastConnection),
+        });
+        const futureSlot = new ServerSlot({
+            onurlchange: () => { },
+            onstatechange: (kind, description) => { },
+            connectPast: futureConnection.connectSecondary.bind(futureConnection),
+            connectFuture: null,
+        });
+        const presentSlot = new ServerSlot({
+            onurlchange: () => { },
+            onstatechange: (kind, description) => { },
+            connectPast: pastConnection.connectPrimary.bind(pastConnection),
+            connectFuture: futureConnection.connectPrimary.bind(futureConnection),
+        });
+
+        const handleHashChange = () => {
+            // TODO: parse location.hash
         };
     </script>
 </body>
