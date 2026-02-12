@@ -257,7 +257,8 @@
             return index + start;
         }
 
-        function logicEqual(logic1, logic2) {
+        function logicEqual({ nonce: nonce1, logic: logic1 }, { nonce: nonce2, logic: logic2 }) {
+            if (nonce1 !== nonce2) return false;
             if (logic1.length !== logic2.length) return false;
             for (const blockIndex of logic1.keys()) {
                 const block1 = logic1[blockIndex];
@@ -414,7 +415,7 @@
                     }, (error) => {
                         if (signal.aborted) return;
                         this.liveConnection.abort();
-                        this.onstatechange(ServerStateKind.BAD, "Error while looking up data package in cache");
+                        this.onstatechange(ServerStateKind.BAD, "Error getting data package from cache");
                     });
                 } else {
                     requestFromServer();
@@ -791,22 +792,39 @@
                 slotInfo,
                 callbacks,
             }) {
-                if (this.logic && (this.logic.nonce !== nonce || !logicEqual(this.logic.logic, logic))) {
+                console.assert(!this.primaryHalf);
+                if (this.logic && !logicEqual(this.logic.logic, { nonce, logic })) {
                     this.secondaryHalf?.callbacks?.evict();
                     this.secondaryHalf = null;
                 }
                 this.logic = { nonce, logic };
-                return new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.secondaryHalf; });
+                this.primaryHalf = new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.secondaryHalf; });
+                return this.primaryHalf;
             }
 
-            connectSecondary() {
-                if (this.logic && (this.logic.nonce !== nonce || !logicEqual(this.logic.logic, logic))) {
-                    return null;
-                }
-                if (!this.logic) {
+            connectSecondary({
+                nonce,
+                logic,
+                spoilers,
+                dataPackages,
+                slotInfo,
+                callbacks,
+            }) {
+                console.assert(!this.secondaryHalf);
+                if (this.logic) {
+                    if (!logicEqual(this.logic, { nonce, logic })) {
+                        if (this.primaryHalf?.callbacks) {
+                            return null;
+                        } else {
+                            this.primaryHalf = null;
+                            this.logic = { nonce, logic };
+                        }
+                    }
+                } else {
                     this.logic = { nonce, logic };
                 }
-                return new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.primaryHalf; });
+                this.secondaryHalf = new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.primaryHalf; })
+                return this.secondaryHalf;
             }
         };
 
