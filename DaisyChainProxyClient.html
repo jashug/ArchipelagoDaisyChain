@@ -147,6 +147,16 @@
             }
         };
 
+        function getOrInsert(map, key, defaultValue) {
+            // Map.prototype.getOrInsert is still experimental
+            if (map.has(key)) {
+                return map.get(key);
+            } else {
+                map.set(key, defaultValue);
+                return defaultValue;
+            }
+        }
+
         /**
          * Not currently used by the server, may be used in the future for locking slots.
          * I don't see much problem with reusing it for everyone using this client,
@@ -155,6 +165,8 @@
         const GAME_NAME = "DaisyChain Proxy";
         const CLIENT_UUID = "e42b6a67-536d-43db-a714-96482da24ec2";
         const CLIENT_VERSION = 1;
+        const STATUS_GOAL = 30;
+        const HINT_UNSPECIFIED = 0;
 
         const DATA_PACKAGE_STORE_NAME = "DataPackage";
 
@@ -481,30 +493,43 @@
                     this.onstatechange(ServerStateKind.BAD, `Must update client to version ${slotData.version}`);
                     return;
                 }
-                const slotInfo = new Map(Object.entries(packet.slot_info));
+                const slotInfo = new Map(Object.entries(packet.slot_info).map(([k, v]) => [Number(k), v]));
                 const evict = () => {
                     this.liveConnection.abort();
                     this.onstatechange(ServerStateKind.BAD, "Logic mismatch");
                 };
+                const needPastForGoal = slotData.past_logic.length !== 0;
+                const needFutureForGoal = slotData.future_logic.length !== 0;
                 const checkGoal = () => {
-                    if (this.gameStatePast?.isGoal() && this.gameStateFuture?.isGoal()) {
+                    if ((!needPastForGoal || this.authenticated?.gameStatePast?.isGoal()) &&
+                        (!needFutureForGoal || this.authenticated?.gameStateFuture?.isGoal())) {
                         this.socket.send(JSON.stringify([
                             { cmd: "StatusUpdate", status: STATUS_GOAL },
                         ]));
                     }
-                }
+                };
+                const updateHint = ({ player, location, status }) => {
+                    this.socket.send(JSON.stringify([
+                        { cmd: "UpdateHint", player, location, status },
+                    ]))
+                };
+                const createItemHint = ({ player, location }, status) => {
+                    this.socket.send(JSON.stringify([
+                        { cmd: "CreateHints", player, locations: [location], status },
+                    ]));
+                };
                 let gameStatePast = null;
                 if (this.connectPast) {
                     gameStatePast = this.connectPast({
                         nonce: slotData.past_nonce,
                         logic: slotData.past_logic,
                         spoilers: slotData.past_item_spoilers,
-                        dataPackages: this.dataPackages,
-                        slotInfo: this.slotInfo,
+                        dataPackages: this.roomInfo.dataPackages,
+                        slotInfo: slotInfo,
                         callbacks: {
                             evict,
-                            check: (locations) => {
-                                const locationIds = Array.from(locations.values().map((index) =>
+                            check: (locationIndexes) => {
+                                const locationIds = Array.from(locationIndexes.values().map((index) =>
                                     toRange(index, this.authenticated.idRanges.past.location)
                                 ));
                                 this.socket.send(JSON.stringify([
@@ -514,6 +539,16 @@
                             },
                             sendFiller: () => { },
                             checkGoal,
+                            updateHint,
+                            createItemHint,
+                            createLocationHints: (locationIndexes) => {
+                                const locationIds = Array.from(locationIndexes.values().map((index) =>
+                                    toRange(index, this.authenticated.idRanges.past.location)
+                                ));
+                                this.socket.send(JSON.stringify([
+                                    { cmd: "LocationScouts", locations: locationIds, create_as_hint: 2 },
+                                ]));
+                            },
                         },
                     });
                     if (!gameStatePast) {
@@ -532,8 +567,8 @@
                         nonce: slotData.nonce,
                         logic: slotData.future_logic,
                         spoilers: slotData.future_item_spoilers,
-                        dataPackages: this.dataPackages,
-                        slotInfo: this.slotInfo,
+                        dataPackages: this.roomInfo.dataPackages,
+                        slotInfo: slotInfo,
                         callbacks: {
                             evict,
                             check: (locations) => {
@@ -555,6 +590,16 @@
                                 ]));
                             },
                             checkGoal,
+                            updateHint,
+                            createItemHint,
+                            createLocationHints: (locationIndexes) => {
+                                const locationIds = Array.from(locationIndexes.values().map((index) =>
+                                    toRange(index, this.authenticated.idRanges.future.location)
+                                ));
+                                this.socket.send(JSON.stringify([
+                                    { cmd: "LocationScouts", locations: locationIds, create_as_hint: 2 },
+                                ]))
+                            },
                         },
                     });
                     if (!gameStateFuture) {
@@ -570,6 +615,12 @@
                 this.authenticated = new ServerSlot.#AuthBlock(packet.team, packet.slot, slotData, gameStatePast, gameStateFuture);
                 this.authenticated.gameStatePast?.resendChecks();
                 this.authenticated.gameStateFuture?.resendChecks();
+                this.socket.send(JSON.stringify([
+                    { cmd: "SetNotify", keys: [this.authenticated.hintKey] },
+                    { cmd: "Get", keys: [this.authenticated.hintKey] },
+                ]));
+                this.authenticated.gameStatePast?.resendHints();
+                this.authenticated.gameStateFuture?.resendHints();
                 checkGoal();
                 this.liveConnection.signal.addEventListener("abort",
                     () => { this.authenticated = null; },
@@ -624,58 +675,90 @@
                         this.gameStateFuture?.resendChecks();
                     }
                     this.itemIndex += items.length;
-                    const pastItems = [];
-                    const futureItems = [];
-                    for (const item of items) {
-                        const pastIndex = fromRange(item.item, this.idRanges.past.item);
-                        if (pastIndex) {
-                            pastItems.push({ index: pastIndex.index, locationId: item.location, slotNumber: item.player });
+                    for (const [idRange, gameState] of [
+                        [this.idRanges.past, this.gameStatePast],
+                        [this.idRanges.future, this.gameStateFuture]
+                    ]) {
+                        if (!gameState) continue;
+                        const filteredItems = [];
+                        for (const item of items) {
+                            const index = fromRange(item.item, idRange.item);
+                            if (index) {
+                                filteredItems.push({
+                                    index: index.index,
+                                    locationId: item.location,
+                                    slotNumber: item.player,
+                                });
+                            }
                         }
-                        const futureIndex = fromRange(item.item, this.idRanges.future.item);
-                        if (futureIndex) {
-                            futureItems.push({ index: futureIndex.index, locationId: item.location, slotNumber: item.player });
-                        }
+                        gameState.receiveItems(filteredItems, reset);
                     }
-                    this.gameStatePast?.receiveItems(pastItems, reset);
-                    this.gameStateFuture?.receiveItems(futureItems, reset);
                 }
 
                 scoutLocations(locations) {
-                    const pastLocations = [];
-                    const futureLocations = [];
-                    for (const location in locations) {
-                        const pastIndex = fromRange(location.location, this.idRanges.past.location);
-                        if (pastIndex) {
-                            pastLocations.push({ index: pastIndex.index, itemId: location.item, slotNumber: location.player, flags: location.flags });
+                    for (const [idRange, gameState] of [
+                        [this.idRanges.past, this.gameStatePast],
+                        [this.idRanges.future, this.gameStateFuture]
+                    ]) {
+                        if (!gameState) continue;
+                        const filteredLocations = [];
+                        for (const location of locations) {
+                            const index = fromRange(location.location, idRange.location);
+                            if (index) {
+                                filteredLocations.push({
+                                    index: index.index,
+                                    itemId: location.item,
+                                    slotNumber: location.player,
+                                    flags: location.flags,
+                                });
+                            }
                         }
-                        const futureIndex = fromRange(location.location, this.idRanges.future.location);
-                        if (futureIndex) {
-                            futureLocations.push({ index: futureIndex.index, itemId: location.item, slotNumber: location.player, flags: location.flags });
-                        }
+                        gameState.scoutLocations(filteredLocations);
                     }
-                    this.gameStatePast?.scoutLocations(pastLocations);
-                    this.gameStateFuture?.scoutLocations(futureLocations);
                 }
 
                 addCheckedLocations(locations) {
-                    const pastLocations = [];
-                    const futureLocations = [];
-                    for (const location in locations) {
-                        const pastIndex = fromRange(location, this.idRanges.past.location);
-                        if (pastIndex) {
-                            pastLocations.push(pastIndex.index);
+                    for (const [idRange, gameState] of [
+                        [this.idRanges.past, this.gameStatePast],
+                        [this.idRanges.future, this.gameStateFuture]
+                    ]) {
+                        if (!gameState) continue;
+                        const filteredLocations = [];
+                        for (const location of locations) {
+                            const index = fromRange(location, idRange.location);
+                            if (index) {
+                                filteredLocations.push(index.index);
+                            }
                         }
-                        const futureIndex = fromRange(location, this.idRanges.future.location);
-                        if (futureIndex) {
-                            futureLocations.push(futureIndex.index);
-                        }
+                        gameState.addCheckedLocations(filteredLocations);
                     }
-                    this.gameStatePast?.addCheckedLocations(pastLocations);
-                    this.gameStateFuture?.addCheckedLocations(futureLocations);
                 }
 
                 setHints(hints) {
-                    // TODO
+                    for (const [idRange, gameState] of [
+                        [this.idRanges.past, this.gameStatePast],
+                        [this.idRanges.future, this.gameStateFuture]
+                    ]) {
+                        if (!gameState) continue;
+                        const filteredLocationHints = new Map();
+                        const filteredItemHints = new Map();
+                        for (const hint of hints) {
+                            if (hint.found) continue;
+                            if (hint.finding_player === this.slotNumber) {
+                                const index = fromRange(hint.location, idRange.location);
+                                if (index) {
+                                    filteredLocationHints.set(index.index, hint);
+                                }
+                            }
+                            if (hint.receiving_player === this.slotNumber) {
+                                const index = fromRange(hint.item, idRange.item);
+                                if (index) {
+                                    getOrInsert(filteredItemHints, index.index, []).push(hint);
+                                }
+                            }
+                        }
+                        gameState.setHints(filteredLocationHints, filteredItemHints);
+                    }
                 }
             }
         };
@@ -744,9 +827,7 @@
                     otherHalf.callbacks.checkGoal();
                 }
 
-                for (const item of items) {
-                    this.uiCallbacks.updateItem(item.index);
-                }
+                this.uiCallbacks.repaint();
             }
 
             addCheckedLocations(locations) {
@@ -754,27 +835,66 @@
                     console.assert(0 <= location && location < this.totals.locations && Number.isInteger(location));
                     this.checkedLocations.add(location);
                 }
-                for (const location of locations) {
-                    this.uiCallbacks.updateLocation(location);
-                }
+                // Not tracking checked locations in ui
             }
 
             scoutLocations(locations) {
                 for (const location of locations) {
                     console.assert(0 <= location.index && location.index < this.totals.locations && Number.isInteger(location.index));
-                    this.locations.set(location.index, {
+                    this.scoutedLocations.set(location.index, {
                         slotNumber: location.slotNumber,
                         itemId: location.itemId,
                         flags: location.flags,
                     });
                 }
-                for (const location of locations) {
-                    this.uiCallbacks.updateLocation(location.index);
-                }
+                this.uiCallbacks.repaint();
             }
 
-            setHints(hints) {
-                // TODO
+            setHints(locationHints, itemHints) {
+                this.hints = { locations: locationHints, items: itemHints };
+                this.getOtherHalf()?.resendHints();
+                this.resendHints();
+                for (const [index, { receiving_player: player, item, item_flags: flags }] of this.hints.locations.entries()) {
+                    if (!this.scoutedLocations.has(index)) {
+                        this.scoutedLocations.set(index, { slotNumber: player, itemId: item, flags });
+                    }
+                }
+                this.uiCallbacks.repaint();
+            }
+
+            resendHints() {
+                if (!this.callbacks) return;
+                const otherHalf = this.getOtherHalf();
+                if (!otherHalf) return;
+                for (const [index, primaryHint] of otherHalf.hints.locations.entries()) {
+                    const status = primaryHint.status;
+                    const spoiler = this.spoilers[index];
+                    let spoilerHinted = false;
+                    const secondaryHints = getOrInsert(this.hints.items, index, [])
+                    for (const hint of secondaryHints) {
+                        if (hint.status !== status) {
+                            this.callbacks.updateHint({ player: hint.finding_player, location: hint.location, status: status });
+                            hint.status = status;
+                        }
+                        if (hint.finding_player === spoiler.player && hint.location === spoiler.location) spoilerHinted = true;
+                    }
+                    if (!spoilerHinted) {
+                        this.callbacks.createItemHint(spoiler, status);
+                        secondaryHints.push({ finding_player: spoiler.player, location: spoiler.location, status: status });
+                    }
+                }
+                const newLocationsToHint = [];
+                for (const [index, otherHints] of otherHalf.hints.items.entries()) {
+                    if (!this.hints.locations.has(index)) {
+                        newLocationsToHint.push(index);
+                        this.hints.locations.set(index, { status: HINT_UNSPECIFIED });
+                        for (const hint of otherHints) {
+                            otherHints.status = HINT_UNSPECIFIED;
+                        }
+                    }
+                }
+                this.callbacks.createLocationHints(newLocationsToHint);
+                this.uiCallbacks.repaint();
             }
 
             resendChecks() {
@@ -829,6 +949,7 @@
                     {
                         updateItem: (index) => this.uiCallbacks.updatePrimaryItem(this, index),
                         updateLocation: (index) => this.uiCallbacks.updatePrimaryLocation(this, index),
+                        repaint: () => this.uiCallbacks.repaint(this),
                     },
                 );
                 this.uiCallbacks.repaint(this);
@@ -862,6 +983,7 @@
                     {
                         updateItem: (index) => this.uiCallbacks.updatePrimaryLocation(this, index),
                         updateLocation: (index) => this.uiCallbacks.updatePrimaryItem(this, index),
+                        repaint: () => this.uiCallbacks.repaint(this),
                     },
                 );
                 this.uiCallbacks.repaint(this);
@@ -934,7 +1056,7 @@
 
         function makePlayerSpan(name) {
             const span = document.createElement("span");
-            span.replaceChildren([name]);
+            span.replaceChildren(name);
             span.classList.add("player");
             return span;
         };
@@ -943,7 +1065,7 @@
             const span = document.createElement("span");
             const { name: playerName, game } = gameState.slotInfo.get(slotNumber);
             const itemName = gameState.dataPackages.get(game).itemIdToName.get(id);
-            span.replaceChildren([makePlayerSpan(playerName), "'s ", makeItemSpan(itemName)]);
+            span.replaceChildren(makePlayerSpan(playerName), "'s ", makeItemSpan(itemName));
             if (qualifier) span.prepend(qualifier, " ");
             span.classList.add("player-item");
             return span;
@@ -953,7 +1075,7 @@
             const span = document.createElement("span");
             const { name: playerName, game } = gameState.slotInfo.get(slotNumber);
             const locationName = gameState.dataPackages.get(game).locationIdToName.get(id);
-            span.replaceChildren([makePlayerSpan(playerName), "'s ", makeLocationSpan(locationName)]);
+            span.replaceChildren(makePlayerSpan(playerName), "'s ", makeLocationSpan(locationName));
             if (qualifier) span.prepend(qualifier, " ");
             span.classList.add("player-location");
             return span;
@@ -974,13 +1096,21 @@
         function makeFullSpan({ gameState, indexIsItem, index, qualifier = null }) {
             if (!gameState) return null;
             if (indexIsItem) {
-                const location = gameState.itemFirstFoundLocations.get(index);
+                let location = gameState.itemFirstFoundLocations.get(index);
+                const found = Boolean(location);
+                if (!found && gameState.hints.items.has(index)) {
+                    const spoiler = gameState.spoilers[index];
+                    location = { slotNumber: spoiler.player, locationId: spoiler.location };
+                }
                 if (!location) return null;
-                return makeAttributedLocationSpan(gameState, {
-                    slotNumber: location.slotNumber,
-                    id: location.locationId,
-                    qualifier,
-                });
+                return {
+                    found,
+                    span: makeAttributedLocationSpan(gameState, {
+                        slotNumber: location.slotNumber,
+                        id: location.locationId,
+                        qualifier,
+                    })
+                };
             } else {
                 const item = gameState.scoutedLocations.get(index);
                 if (!item) return null;
@@ -1000,15 +1130,16 @@
             const makeItemRow = (logicPair, index) => {
                 const row = document.createElement("div");
                 const locationSpan = makeFullSpan({ gameState: logicPair.primaryHalf, indexIsItem: true, index });
-                const itemSpan = makeFullSpan({ gameState: logicPair.secondaryHalf, indexIsItem: true, index, qualifier });
+                const itemSpan = makeFullSpan({ gameState: logicPair.secondaryHalf, indexIsItem: false, index, qualifier });
                 const defaultItemSpan = daisyChainSpan({ isItem: true, isPast: logicTranspose, index });
                 if (locationSpan) {
                     row.replaceChildren(
                         indexToString(index), ": ",
-                        locationSpan,
-                        " contained ",
+                        locationSpan.span,
+                        locationSpan.found ? " contained " : " contains ",
                         itemSpan ?? defaultItemSpan,
                     );
+                    if (!locationSpan.found) row.prepend("Hint ");
                 } else {
                     if (itemSpan) {
                         row.replaceChildren(
@@ -1021,28 +1152,28 @@
                             " not found yet",
                         );
                     }
-                    // TODO: hint rows
                 }
                 return row;
             };
             const makeLocationRow = (logicPair, index) => {
                 const row = document.createElement("div");
                 const itemSpan = makeFullSpan({ gameState: logicPair.primaryHalf, indexIsItem: false, index });
-                const locationSpan = makeFullSpan({ gameState: logicPair.secondaryHalf, indexIsItem: false, index, qualifier });
+                const locationSpan = makeFullSpan({ gameState: logicPair.secondaryHalf, indexIsItem: true, index, qualifier });
                 const defaultLocationSpan = daisyChainSpan({ isPast: logicTranspose, isItem: false, index });
                 if (itemSpan) {
                     row.replaceChildren(
                         indexToString(index), ": ",
                         itemSpan,
                         " is in ",
-                        locationSpan ?? defaultLocationSpan,
+                        locationSpan?.span ?? defaultLocationSpan,
                     );
+                    if (locationSpan && !locationSpan.found) row.prepend("Hint ");
                 } else {
                     if (locationSpan) {
                         row.replaceChildren(
                             defaultLocationSpan,
                             " is ",
-                            locationSpan,
+                            locationSpan.span,
                         )
                     } else {
                         row.replaceChildren(
@@ -1050,7 +1181,6 @@
                             " has not been checked"
                         );
                     }
-                    // TODO: hint rows
                 }
                 return row;
             };
@@ -1069,12 +1199,14 @@
                     rootElement.replaceChildren(...itemRows, ...locationRows);
                 },
                 updatePrimaryItem: (logicPair, index) => {
-                    let row = itemRows.get(index);
+                    console.assert(0 <= index && index <= itemRows.length && Number.isInteger(index));
+                    let row = itemRows[index];
                     if (!row) return;
                     row.replaceWith(makeItemRow(logicPair, index));
                 },
                 updatePrimaryLocation: (logicPair, index) => {
-                    let row = locationRows.get(index);
+                    console.assert(0 <= index && index <= itemRows.length && Number.isInteger(index));
+                    let row = locationRows[index];
                     if (!row) return;
                     row.replaceWith(makeLocationRow(logicPair, index));
                 },
