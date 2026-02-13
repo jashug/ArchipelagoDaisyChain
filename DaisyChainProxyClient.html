@@ -907,9 +907,7 @@
             }
 
             isGoal() {
-                return (
-                    this.itemFirstFoundLocations.size === this.totals.items &&
-                    (this.totals.locations === 0 || this.getOtherHalf()?.itemFirstFoundLocations.size === this.totals.locations));
+                return this.itemFirstFoundLocations.size >= this.totals.items && this.checkedLocations.size >= this.totals.locations;
             }
         }
 
