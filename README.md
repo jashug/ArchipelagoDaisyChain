@@ -23,8 +23,8 @@ Put this repository as a folder named `daisychain` in `C:\ProgramData\Archipelag
 ---
 
 Current status:
-- World definition first draft done
+- World definition successful
   - TODO: Integrate with Universal Tracker (the randomized logic confuses it)
-- TODO: Proxy client not yet started
-  - Proxy client hint forwarding (get basic check forwarding working first)
-  - Investigate supporting DeathLink? Can't sync DataStorage Get/Set, but could forward chat?
+- Proxy client working
+  - TODO: Improve UI
+- TODO: A lot more testing
