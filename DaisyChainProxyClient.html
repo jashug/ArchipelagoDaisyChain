@@ -117,21 +117,13 @@
     </div>
 
     <div class="item-table-container">
-        <div id="items-from-past">
-            <h3>Items from Past</h3>
-            <div id="items-from-past-rows"></div>
+        <div>
+            <h3>Past Connection</h3>
+            <div id="past-rows"></div>
         </div>
-        <div id="items-from-future">
-            <h3>Items from Future</h3>
-            <div id="items-from-future-rows"></div>
-        </div>
-        <div id="items-for-other">
-            <h3>Items for Others</h3>
-            <div id="items-for-other-rows"></div>
-        </div>
-        <div id="passthrough">
-            <h3>Items Passed Through</h3>
-            <div id="items-passthrough-rows"></div>
+        <div>
+            <h3>Future Connection</h3>
+            <div id="future-rows"></div>
         </div>
     </div>
 
@@ -162,6 +154,7 @@
         */
         const GAME_NAME = "DaisyChain Proxy";
         const CLIENT_UUID = "e42b6a67-536d-43db-a714-96482da24ec2";
+        const CLIENT_VERSION = 1;
 
         const DATA_PACKAGE_STORE_NAME = "DataPackage";
 
@@ -202,14 +195,14 @@
             });
         };
 
-        function sumOfLogic(logic) {
+        function sumOfLogic(logic, transpose = false) {
             let items = 0;
             let locations = 0;
             for (const block of logic) {
                 items += block.items;
                 locations += block.locations.length;
             }
-            return { items, locations };
+            return transpose ? { items: locations, locations: items } : { items, locations };
         }
 
         function fromRange(id, { start, count }) {
@@ -483,11 +476,23 @@
                     return;
                 }
                 const slotData = packet.slot_data;
+                if (slotData.version > CLIENT_VERSION) {
+                    this.liveConnection.abort();
+                    this.onstatechange(ServerStateKind.BAD, `Must update client to version ${slotData.version}`);
+                    return;
+                }
                 const slotInfo = new Map(Object.entries(packet.slot_info));
                 const evict = () => {
                     this.liveConnection.abort();
                     this.onstatechange(ServerStateKind.BAD, "Logic mismatch");
                 };
+                const checkGoal = () => {
+                    if (this.gameStatePast?.isGoal() && this.gameStateFuture?.isGoal()) {
+                        this.socket.send(JSON.stringify([
+                            { cmd: "StatusUpdate", status: STATUS_GOAL },
+                        ]));
+                    }
+                }
                 let gameStatePast = null;
                 if (this.connectPast) {
                     gameStatePast = this.connectPast({
@@ -507,11 +512,13 @@
                                     { cmd: "LocationChecks", locations: locationIds },
                                 ]));
                             },
+                            sendFiller: () => { },
+                            checkGoal,
                         },
                     });
                     if (!gameStatePast) {
                         this.liveConnection.abort();
-                        this.onstatechange("Logic mismatch");
+                        this.onstatechange(ServerStateKind.BAD, "Logic mismatch");
                         return;
                     }
                     this.liveConnection.signal.addEventListener("abort",
@@ -538,6 +545,16 @@
                                     { cmd: "LocationChecks", locations: locationIds },
                                 ]));
                             },
+                            sendFiller: () => {
+                                const locationIds = [];
+                                for (let i = 0; i < this.authenticated.idRanges.filler.location.count; i++) {
+                                    locationIds.push(this.authenticated.idRanges.filler.location.start + i);
+                                }
+                                this.socket.send(JSON.stringify([
+                                    { cmd: "LocationChecks", locations: locationIds },
+                                ]));
+                            },
+                            checkGoal,
                         },
                     });
                     if (!gameStateFuture) {
@@ -553,6 +570,7 @@
                 this.authenticated = new ServerSlot.#AuthBlock(packet.team, packet.slot, slotData, gameStatePast, gameStateFuture);
                 this.authenticated.gameStatePast?.resendChecks();
                 this.authenticated.gameStateFuture?.resendChecks();
+                checkGoal();
                 this.liveConnection.signal.addEventListener("abort",
                     () => { this.authenticated = null; },
                     { once: true },
@@ -601,9 +619,7 @@
                         this.itemIndex = 0;
                     }
                     if (index !== this.itemIndex) {
-                        this.socket.send(JSON.stringify([{
-                            cmd: "Sync",
-                        }]));
+                        this.socket.send(JSON.stringify([{ cmd: "Sync", }]));
                         this.gameStatePast?.resendChecks();
                         this.gameStateFuture?.resendChecks();
                     }
@@ -685,13 +701,17 @@
             };
             callbacks;
             getOtherHalf;
+            uiCallbacks;
+            totals;
 
-            constructor(slotInfo, spoilers, dataPackages, callbacks, getOtherHalf) {
+            constructor(totals, slotInfo, spoilers, dataPackages, callbacks, getOtherHalf, uiCallbacks) {
+                this.totals = totals;
                 this.slotInfo = slotInfo;
                 this.spoilers = spoilers;
                 this.dataPackages = dataPackages;
                 this.callbacks = callbacks;
                 this.getOtherHalf = getOtherHalf;
+                this.uiCallbacks = uiCallbacks;
             }
 
             disconnect() {
@@ -705,6 +725,7 @@
                     this.itemFirstFoundLocations = new Map();
                 }
                 for (const item of items) {
+                    console.assert(0 <= item.index && item.index < this.totals.items && Number.isInteger(item.index));
                     this.receivedItems.push(item);
                     if (!this.itemFirstFoundLocations.has(item.index)) {
                         this.firstReceivedItems.push(item);
@@ -714,31 +735,42 @@
                         });
                     }
                 }
+                this.callbacks.checkGoal();
+
                 const otherHalf = this.getOtherHalf();
                 if (otherHalf?.callbacks) {
                     const locations = Array.from(items.values().map((item) => item.index));
-                    otherHalf.callbacks?.check(locations);
+                    otherHalf.callbacks.check(locations);
+                    otherHalf.callbacks.checkGoal();
                 }
 
-                // TODO: signal updated items (maybe all received items, maybe only first received items)
+                for (const item of items) {
+                    this.uiCallbacks.updateItem(item.index);
+                }
             }
 
             addCheckedLocations(locations) {
                 for (const location of locations) {
+                    console.assert(0 <= location && location < this.totals.locations && Number.isInteger(location));
                     this.checkedLocations.add(location);
                 }
-                // TODO: signal checked locations changed
+                for (const location of locations) {
+                    this.uiCallbacks.updateLocation(location);
+                }
             }
 
             scoutLocations(locations) {
                 for (const location of locations) {
+                    console.assert(0 <= location.index && location.index < this.totals.locations && Number.isInteger(location.index));
                     this.locations.set(location.index, {
                         slotNumber: location.slotNumber,
                         itemId: location.itemId,
                         flags: location.flags,
                     });
                 }
-                // TODO: signal scouted locations changed
+                for (const location of locations) {
+                    this.uiCallbacks.updateLocation(location.index);
+                }
             }
 
             setHints(hints) {
@@ -746,15 +778,20 @@
             }
 
             resendChecks() {
+                this.callbacks.sendFiller();
                 const otherHalf = this.getOtherHalf();
                 if (otherHalf) {
                     const locations = Array.from(otherHalf.firstReceivedItems.values().map((item) => item.index));
                     this.callbacks.check(locations);
                 }
             }
-        }
 
-        // TODO: Goal
+            isGoal() {
+                return (
+                    this.itemFirstFoundLocations.size === this.totals.items &&
+                    (this.totals.locations === 0 || this.getOtherHalf()?.itemFirstFoundLocations.size === this.totals.locations));
+            }
+        }
 
         /** Encapsulate the game state between two communicating server halves.
          *
@@ -764,10 +801,12 @@
             logic = null;
             primaryHalf = null;
             secondaryHalf = null;
-            onrepaint;
+            uiCallbacks;
+            transposeLogic;
 
-            constructor(onrepaint) {
-                this.onrepaint = onrepaint;
+            constructor(uiCallbacks, transposeLogic) {
+                this.uiCallbacks = uiCallbacks;
+                this.transposeLogic = transposeLogic;
             }
 
             connectPrimary({
@@ -784,8 +823,15 @@
                     this.secondaryHalf = null;
                 }
                 this.logic = { nonce, logic };
-                this.primaryHalf = new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.secondaryHalf; });
-                this.onrepaint();
+                this.primaryHalf = new HalfGameState(
+                    sumOfLogic(this.logic.logic),
+                    slotInfo, spoilers, dataPackages, callbacks, () => { return this.secondaryHalf; },
+                    {
+                        updateItem: (index) => this.uiCallbacks.updatePrimaryItem(this, index),
+                        updateLocation: (index) => this.uiCallbacks.updatePrimaryLocation(this, index),
+                    },
+                );
+                this.uiCallbacks.repaint(this);
                 return this.primaryHalf;
             }
 
@@ -810,8 +856,15 @@
                 } else {
                     this.logic = { nonce, logic };
                 }
-                this.secondaryHalf = new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.primaryHalf; });
-                this.onrepaint();
+                this.secondaryHalf = new HalfGameState(
+                    sumOfLogic(this.logic.logic, true),
+                    slotInfo, spoilers, dataPackages, callbacks, () => { return this.primaryHalf; },
+                    {
+                        updateItem: (index) => this.uiCallbacks.updatePrimaryLocation(this, index),
+                        updateLocation: (index) => this.uiCallbacks.updatePrimaryItem(this, index),
+                    },
+                );
+                this.uiCallbacks.repaint(this);
                 return this.secondaryHalf;
             }
         };
@@ -865,12 +918,174 @@
             };
         };
 
-        const pastConnection = new LogicPair(() => {
-            // TODO: repaint
-        });
-        const futureConnection = new LogicPair(() => {
-            // TODO: repaint
-        });
+        function makeItemSpan(name) {
+            const span = document.createElement("span");
+            span.replaceChildren([name]);
+            span.classList.add("item");
+            return span;
+        };
+
+        function makeLocationSpan(name) {
+            const span = document.createElement("span");
+            span.replaceChildren([name]);
+            span.classList.add("location");
+            return span;
+        };
+
+        function makePlayerSpan(name) {
+            const span = document.createElement("span");
+            span.replaceChildren([name]);
+            span.classList.add("player");
+            return span;
+        };
+
+        function makeAttributedItemSpan(gameState, { slotNumber, id, qualifier = null }) {
+            const span = document.createElement("span");
+            const { name: playerName, game } = gameState.slotInfo.get(slotNumber);
+            const itemName = gameState.dataPackages.get(game).itemIdToName.get(id);
+            span.replaceChildren([makePlayerSpan(playerName), "'s ", makeItemSpan(itemName)]);
+            if (qualifier) span.prepend(qualifier, " ");
+            span.classList.add("player-item");
+            return span;
+        };
+
+        function makeAttributedLocationSpan(gameState, { slotNumber, id, qualifier = null }) {
+            const span = document.createElement("span");
+            const { name: playerName, game } = gameState.slotInfo.get(slotNumber);
+            const locationName = gameState.dataPackages.get(game).locationIdToName.get(id);
+            span.replaceChildren([makePlayerSpan(playerName), "'s ", makeLocationSpan(locationName)]);
+            if (qualifier) span.prepend(qualifier, " ");
+            span.classList.add("player-location");
+            return span;
+        };
+
+        function indexToString(index) {
+            return "#" + String(index + 1).padStart(3, "0");
+        }
+
+        function daisyChainName({ isItem, isPast, index }) {
+            return `${isItem ? "Item for" : "Location in"} ${isPast ? "Past" : "Future"} ${indexToString(index)}`;
+        }
+
+        function daisyChainSpan({ isPast, isItem, index }) {
+            return (isItem ? makeItemSpan : makeLocationSpan)(daisyChainName({ isPast, isItem, index }));
+        }
+
+        function makeFullSpan({ gameState, indexIsItem, index, qualifier = null }) {
+            if (!gameState) return null;
+            if (indexIsItem) {
+                const location = gameState.itemFirstFoundLocations.get(index);
+                if (!location) return null;
+                return makeAttributedLocationSpan(gameState, {
+                    slotNumber: location.slotNumber,
+                    id: location.locationId,
+                    qualifier,
+                });
+            } else {
+                const item = gameState.scoutedLocations.get(index);
+                if (!item) return null;
+                return makeAttributedItemSpan(gameState, {
+                    slotNumber: item.slotNumber,
+                    id: item.itemId,
+                    qualifier,
+                });
+            }
+        }
+
+        function bindConnectionOutput(rootElement, logicTranspose, qualifier) {
+            const container = rootElement;
+            let itemRows = [];
+            let locationRows = [];
+
+            const makeItemRow = (logicPair, index) => {
+                const row = document.createElement("div");
+                const locationSpan = makeFullSpan({ gameState: logicPair.primaryHalf, indexIsItem: true, index });
+                const itemSpan = makeFullSpan({ gameState: logicPair.secondaryHalf, indexIsItem: true, index, qualifier });
+                const defaultItemSpan = daisyChainSpan({ isItem: true, isPast: logicTranspose, index });
+                if (locationSpan) {
+                    row.replaceChildren(
+                        indexToString(index), ": ",
+                        locationSpan,
+                        " contained ",
+                        itemSpan ?? defaultItemSpan,
+                    );
+                } else {
+                    if (itemSpan) {
+                        row.replaceChildren(
+                            defaultItemSpan, " is ",
+                            itemSpan,
+                        );
+                    } else {
+                        row.replaceChildren(
+                            defaultItemSpan,
+                            " not found yet",
+                        );
+                    }
+                    // TODO: hint rows
+                }
+                return row;
+            };
+            const makeLocationRow = (logicPair, index) => {
+                const row = document.createElement("div");
+                const itemSpan = makeFullSpan({ gameState: logicPair.primaryHalf, indexIsItem: false, index });
+                const locationSpan = makeFullSpan({ gameState: logicPair.secondaryHalf, indexIsItem: false, index, qualifier });
+                const defaultLocationSpan = daisyChainSpan({ isPast: logicTranspose, isItem: false, index });
+                if (itemSpan) {
+                    row.replaceChildren(
+                        indexToString(index), ": ",
+                        itemSpan,
+                        " is in ",
+                        locationSpan ?? defaultLocationSpan,
+                    );
+                } else {
+                    if (locationSpan) {
+                        row.replaceChildren(
+                            defaultLocationSpan,
+                            " is ",
+                            locationSpan,
+                        )
+                    } else {
+                        row.replaceChildren(
+                            defaultLocationSpan,
+                            " has not been checked"
+                        );
+                    }
+                    // TODO: hint rows
+                }
+                return row;
+            };
+
+            return {
+                repaint: (logicPair) => {
+                    const { items: itemCount, locations: locationCount } = sumOfLogic(logicPair.logic.logic, logicTranspose);
+                    itemRows = [];
+                    locationRows = [];
+                    for (let i = 0; i < itemCount; i++) {
+                        itemRows.push(makeItemRow(logicPair, i));
+                    }
+                    for (let i = 0; i < locationCount; i++) {
+                        locationRows.push(makeLocationRow(logicPair, i));
+                    }
+                    rootElement.replaceChildren(...itemRows, ...locationRows);
+                },
+                updatePrimaryItem: (logicPair, index) => {
+                    let row = itemRows.get(index);
+                    if (!row) return;
+                    row.replaceWith(makeItemRow(logicPair, index));
+                },
+                updatePrimaryLocation: (logicPair, index) => {
+                    let row = locationRows.get(index);
+                    if (!row) return;
+                    row.replaceWith(makeLocationRow(logicPair, index));
+                },
+            }
+        };
+
+        const pastConnectionUI = bindConnectionOutput(document.getElementById("past-rows"), true, "Past");
+        const futureConnectionUI = bindConnectionOutput(document.getElementById("future-rows"), false, "Future");
+
+        const pastConnection = new LogicPair(pastConnectionUI);
+        const futureConnection = new LogicPair(futureConnectionUI);
 
         const pastCallbacks = bindServerInput(document.getElementById("past-server"));
         const pastSlot = new ServerSlot({
@@ -890,7 +1105,6 @@
             connectPast: futureConnection.connectSecondary.bind(futureConnection),
             connectFuture: null,
         });
-
 
         // Need to encode + & # in fragment after encodeURI()
         function myFragmentEncode(string) {
