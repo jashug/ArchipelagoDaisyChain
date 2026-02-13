@@ -14,7 +14,8 @@ in a reasonable amount of time similar to non daisy-chained asyncs. No one is si
 
 # Installation
 
-Once I have something working, I will release an `.apworld` that can be installed and used more easily.
+Grab the APWorld and client from Releases.
+Install the APWorld, and open the client in a browser locally (eventually I should host this on GitHub pages).
 
 ## Development Setup
 
