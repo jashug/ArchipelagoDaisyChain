@@ -5,7 +5,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AP DaisyChain Client</title>
-    <link rel="modulepreload" href="https://unpkg.com/archipelago.js@2.0.4/dist/archipelago.min.js" />
     <style>
         /* Generic better CSS defaults, based in large part on https://www.joshwcomeau.com/css/custom-css-reset/ */
         *,
@@ -40,10 +39,7 @@
         .server-inputs {
             display: flex;
             flex-flow: row wrap;
-        }
-
-        .server-inputs>label {
-            margin-inline-end: 0.5em;
+            gap: 0em 0.5em;
         }
 
         .server-address {
@@ -54,6 +50,15 @@
         .password {
             width: 16ch
         }
+
+        .item-table-container {
+            display: flex;
+            flex-flow: row wrap;
+        }
+
+        .item-table-container>div {
+            flex: 350px
+        }
     </style>
 </head>
 
@@ -63,10 +68,10 @@
     <!-- TODO: Add link to github repository -->
 
     <h3>Past:</h3>
-    <div class="server">
+    <div class="server" id="past-server">
         <div class="server-inputs">
-            <label for="past-server">Server:
-                <input type="url" id="past-server" class="server-address"
+            <label for="past-address">Server:
+                <input type="url" id="past-address" class="server-address"
                     placeholder="wss://archipelago.gg:port" /></label>
             <label for="past-slot">Slot:
                 <input type="text" id="past-slot" class="username" placeholder="SlotName" /></label>
@@ -79,10 +84,10 @@
         </div>
     </div>
     <h3>Present:</h3>
-    <div class="server">
+    <div class="server" id="present-server">
         <div class="server-inputs">
-            <label for="present-server">Server:
-                <input type="url" id="present-server" class="server-address"
+            <label for="present-address">Server:
+                <input type="url" id="present-address" class="server-address"
                     placeholder="wss://archipelago.gg:port" /></label>
             <label for="present-slot">Slot:
                 <input type="text" id="present-slot" class="username" placeholder="SlotName" /></label>
@@ -95,10 +100,10 @@
         </div>
     </div>
     <h3>Future:</h3>
-    <div class="server">
+    <div class="server" id="future-server">
         <div class="server-inputs">
-            <label for="future-server">Server:
-                <input type="url" id="future-server" class="server-address"
+            <label for="future-address">Server:
+                <input type="url" id="future-address" class="server-address"
                     placeholder="wss://archipelago.gg:port" /></label>
             <label for="future-slot">Slot:
                 <input type="text" id="future-slot" class="username" placeholder="SlotName" /></label>
@@ -111,24 +116,26 @@
         </div>
     </div>
 
-    <script type="module">
-        import { } from "https://unpkg.com/archipelago.js@2.0.4/dist/archipelago.min.js";
-    </script>
+    <div class="item-table-container">
+        <div id="items-from-past">
+            <h3>Items from Past</h3>
+            <div id="items-from-past-rows"></div>
+        </div>
+        <div id="items-from-future">
+            <h3>Items from Future</h3>
+            <div id="items-from-future-rows"></div>
+        </div>
+        <div id="items-for-other">
+            <h3>Items for Others</h3>
+            <div id="items-for-other-rows"></div>
+        </div>
+        <div id="passthrough">
+            <h3>Items Passed Through</h3>
+            <div id="items-passthrough-rows"></div>
+        </div>
+    </div>
 
     <script>"use strict";
-        let Archipelago;
-
-        import("https://unpkg.com/archipelago.js@2.0.4/dist/archipelago.min.js").then((module) => {
-            Archipelago = module;
-        });
-
-        window.addEventListener("hashchange", (event) => {
-            console.log(`hash changed: ${event.newURL}`);
-            let newURL = new URL(event.newURL);
-            let target_div = document.querySelector("body div.to-be-targeted");
-            target_div.id = new URL(event.newURL).hash
-        });
-
         /**
          * Takes an array, and performs an in-place random permutation.
          * Copied from https://stackoverflow.com/a/2450976/2644368
@@ -147,44 +154,6 @@
                 [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
             }
         };
-
-        /*
-        We have three server slots: Past, Present, and Future.
-        The operation of each is very similar.
-
-        A server can be in one of five states:
-        - Disconnected
-        - Connecting (socket created)
-        - Waiting for RoomInfo (socket open event recieved)
-        - Authenticating (RoomInfo message recieved, Connect message sent)
-        - Connected (Connected message recieved)
-
-        Most of the rest of the world doesn't care about the difference between Connecting, Waiting for RoomInfo, and Authenticating,
-        with all three states indicating a live WebSocket that can not yet be sent checks/hints,
-        and may not have matching nonce/logic (and thus be rejected).
-        In these states, the server will also not be sending items and locations.
-
-        We want the ability to, from the outside, call a close method on the server to reset it to
-        Disconnected immediately, and prevent recieving further items/locations/hints.
-
-        Local data is very similar on the two links past-present and present-future.
-        Each pair maintains a shared nonce/logic, and can have each half connected or disconnected.
-
-        The nonce/logic is updated (and cached data cleared) if the nonce/logic doesn't match and
-        the other side is disconnected or this side has priority (in which case call a stored close on the other side).
-        While a connection is established, the logic won't change until close is called.
-        Each side can report an item recieved, a locationscout, a hint (split into hint item and hint location?).
-
-        When the location.hash changes: decode the hash to determine server addresses.
-        Disconnect servers which are not present in the new hash, or which are different from the current
-        values for servers not disconnected. Then connect servers which are disconnected that should be connected.
-
-        Pressing a connect/disconnect button changes the hash, using the other two parts directly.
-
-        From the main logic's perspective, each server is either connected or not.
-        The only part of the system that wants to know about in-progress connections is the logic to disconnect
-        from a server by onhashchange, and this can be encapsulated in the full close method.
-        */
 
         /**
          * Not currently used by the server, may be used in the future for locking slots.
@@ -268,9 +237,10 @@
                 for (const rowIndex of block1.locations.keys()) {
                     const row1 = new Set(block1.locations[rowIndex]);
                     const row2 = new Set(block2.locations[rowIndex]);
-                    if (row1.symmetricDifference(row2).length !== 0) return false;
+                    if (row1.symmetricDifference(row2).size !== 0) return false;
                 }
             }
+            return true;
         }
 
         const ServerStateKind = {
@@ -285,7 +255,7 @@
         class ServerSlot {
             // Using public fields is slightly more flexible,
             // and I don't need the encapsulation guarantees of private fields.
-            stringURL = null;
+            connectionTarget = null;
             liveConnection = null;
             socket = null;
             credentials = null;
@@ -296,47 +266,51 @@
             connectPast;
             connectFuture;
 
-            constructor({ onurlchange, onstatechange, connectPast, connectFuture }) {
+            constructor({ onurlchange, onstatechange, setconnect, connectPast, connectFuture }) {
                 this.onurlchange = onurlchange;
                 this.onstatechange = onstatechange;
+                setconnect(this.connect.bind(this));
                 this.connectPast = connectPast;
                 this.connectFuture = connectFuture;
+                this.disconnect();
             }
 
             disconnect() {
                 this.liveConnection?.abort()
-                this.stringURL = null;
-                this.onurlchange();
+                this.connectionTarget = null;
+                this.onurlchange(null);
                 this.onstatechange(ServerStateKind.NEUTRAL, "Disconnected");
             }
 
-            // N.B. This behaves very similar to a setter for this.stringURL
-            connect(url) {
-                if (!url) {
+            // N.B. This behaves very similar to a setter for this.connectionTarget
+            connect(connectionTarget) {
+                if (!connectionTarget) {
                     this.disconnect();
                     return;
                 }
-                const stringURL = url.toString();
-                if (this.stringURL !== stringURL) {
+                const stringURL = connectionTarget.url.toString();
+                if (!this.connectionTarget ||
+                    this.connectionTarget.url !== stringURL ||
+                    this.connectionTarget.slotName !== connectionTarget.slotName ||
+                    this.connectionTarget.password !== connectionTarget.password) {
+                    // We are changing connectionTarget
                     this.liveConnection?.abort();
-                    this.stringURL = stringURL;
-                    this.onurlchange();
+                    this.connectionTarget = connectionTarget;
+                    this.onurlchange(this.connectionTarget);
                 } else if (this.liveConnection) {
                     // Don't need to disconnect and reconnect if we are already connected to the right place.
                     return;
                 }
                 const candidateURL = URL.parse(HAS_PROTOCOL.test(stringURL) ? stringURL : "wss://" + stringURL);
-                if (!candiateURL || candidateURL.hash) {
+                if (!candidateURL || candidateURL.hash) {
                     this.onstatechange(ServerStateKind.BAD, "Invalid URL");
                     return;
                 }
-                this.credentials = { slotName: candidateURL.username, password: candidateURL.password };
                 this.liveConnection = new AbortController();
                 this.liveConnection.signal.addEventListener("abort", () => {
                     this.liveConnection = null;
                     this.socket.close();
                     this.socket = null;
-                    this.credentials = null;
                 }, { once: true });
                 this.socket = this.#createSocket(candidateURL);
                 this.onstatechange(ServerStateKind.NEUTRAL, "Connecting...");
@@ -363,7 +337,7 @@
                     return;
                 }
                 let url = new URL(this.socket.url);
-                if (url.protocol === "ws:" || HAS_PROTOCOL.test(this.stringURL)) {
+                if (url.protocol === "ws:" || HAS_PROTOCOL.test(this.connectionTarget.url)) {
                     this.liveConnection.abort();
                     this.onstatechange(ServerStateKind.BAD, "Unable to connect");
                     return;
@@ -376,32 +350,32 @@
             getNextDataPackage() {
                 if (this.roomInfo.gamesToFetch.length === 0) {
                     console.assert(this.roomInfo.games.every((game) => this.roomInfo.dataPackages.has(game)));
-                    this.socket.send(JSON.stringify({
+                    this.socket.send(JSON.stringify([{
                         cmd: "Connect",
-                        name: this.credentials.slotName,
+                        name: this.connectionTarget.slotName,
                         game: GAME_NAME,
-                        password: this.credentials.password,
+                        password: this.connectionTarget.password,
                         slot_data: true,
                         items_handling: 0b111 /* All items */,
                         uuid: CLIENT_UUID,
                         tags: ["NoText"],
                         version: { major: 0, minor: 6, build: 5, class: "Version" },
-                    }));
+                    }]));
                     this.onstatechange(ServerStateKind.NEUTRAL, "Authenticating...");
                     return;
                 }
                 const game = this.roomInfo.gamesToFetch.pop();
                 console.assert(!this.roomInfo.dataPackages.has(game));
                 const requestFromServer = () => {
-                    this.socket.send(JSON.stringify({
+                    this.socket.send(JSON.stringify([{
                         cmd: "GetDataPackage",
                         games: [game],
-                    }));
+                    }]));
                 };
                 const checksum = this.roomInfo.dataPackageChecksums.get(game);
                 if (checksum) {
                     const signal = this.liveConnection.signal;
-                    getDataPackage([game, checksum]).then((result) => {
+                    getDataPackage({ game, checksum }).then((result) => {
                         if (signal.aborted) return;
                         if (result) {
                             this.roomInfo.dataPackages.set(game, {
@@ -474,8 +448,10 @@
                     console.log(`Unrecognized packet type ${packet.cmd}`);
                 };
                 const packets = JSON.parse(event.data);
+                const signal = this.liveConnection.signal;
                 for (const packet of packets) {
-                    (handlers.getOrDefault(packet.cmd) || defaultHandler).call(this, packet);
+                    (handlers.get(packet.cmd) || defaultHandler).call(this, packet);
+                    if (signal.aborted) return;
                 }
             }
 
@@ -508,16 +484,20 @@
                 }
                 const slotData = packet.slot_data;
                 const slotInfo = new Map(Object.entries(packet.slot_info));
+                const evict = () => {
+                    this.liveConnection.abort();
+                    this.onstatechange(ServerStateKind.BAD, "Logic mismatch");
+                };
                 let gameStatePast = null;
-                if (connectPast) {
-                    gameStatePast = connectPast({
+                if (this.connectPast) {
+                    gameStatePast = this.connectPast({
                         nonce: slotData.past_nonce,
                         logic: slotData.past_logic,
                         spoilers: slotData.past_item_spoilers,
                         dataPackages: this.dataPackages,
                         slotInfo: this.slotInfo,
                         callbacks: {
-                            evict: () => this.liveConnection.abort(),
+                            evict,
                             check: (locations) => {
                                 const locationIds = Array.from(locations.values().map((index) =>
                                     toRange(index, this.authenticated.idRanges.past.location)
@@ -540,15 +520,15 @@
                     );
                 }
                 let gameStateFuture = null;
-                if (connectFuture) {
-                    gameStateFuture = connectFuture({
+                if (this.connectFuture) {
+                    gameStateFuture = this.connectFuture({
                         nonce: slotData.nonce,
                         logic: slotData.future_logic,
                         spoilers: slotData.future_item_spoilers,
                         dataPackages: this.dataPackages,
                         slotInfo: this.slotInfo,
                         callbacks: {
-                            evict: () => this.liveConnection.abort(),
+                            evict,
                             check: (locations) => {
                                 const locationIds = Array.from(locations.values().map((index) =>
                                     toRange(index, this.authenticated.idRanges.future.location)
@@ -571,6 +551,8 @@
                     );
                 }
                 this.authenticated = new ServerSlot.#AuthBlock(packet.team, packet.slot, slotData, gameStatePast, gameStateFuture);
+                this.authenticated.gameStatePast?.resendChecks();
+                this.authenticated.gameStateFuture?.resendChecks();
                 this.liveConnection.signal.addEventListener("abort",
                     () => { this.authenticated = null; },
                     { once: true },
@@ -591,7 +573,7 @@
                 constructor(teamNumber, slotNumber, slotData, gameStatePast, gameStateFuture) {
                     this.teamNumber = teamNumber;
                     this.slotNumber = slotNumber;
-                    this.hintKey = `_read_hints_${packet.team}_${packet.slot}`;
+                    this.hintKey = `_read_hints_${teamNumber}_${slotNumber}`;
                     this.gameStatePast = gameStatePast;
                     this.gameStateFuture = gameStateFuture;
                     // Because past logic gives the transpose matrix, swap items and locations.
@@ -619,9 +601,9 @@
                         this.itemIndex = 0;
                     }
                     if (index !== this.itemIndex) {
-                        this.socket.send(JSON.stringify({
+                        this.socket.send(JSON.stringify([{
                             cmd: "Sync",
-                        }));
+                        }]));
                         this.gameStatePast?.resendChecks();
                         this.gameStateFuture?.resendChecks();
                     }
@@ -778,11 +760,15 @@
          *
          * Locations of one are items of the other, and vice versa.
          */
-
         class LogicPair {
             logic = null;
             primaryHalf = null;
             secondaryHalf = null;
+            onrepaint;
+
+            constructor(onrepaint) {
+                this.onrepaint = onrepaint;
+            }
 
             connectPrimary({
                 nonce,
@@ -792,13 +778,14 @@
                 slotInfo,
                 callbacks,
             }) {
-                console.assert(!this.primaryHalf);
-                if (this.logic && !logicEqual(this.logic.logic, { nonce, logic })) {
+                console.assert(!this.primaryHalf?.callbacks);
+                if (this.logic && !logicEqual(this.logic, { nonce, logic })) {
                     this.secondaryHalf?.callbacks?.evict();
                     this.secondaryHalf = null;
                 }
                 this.logic = { nonce, logic };
                 this.primaryHalf = new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.secondaryHalf; });
+                this.onrepaint();
                 return this.primaryHalf;
             }
 
@@ -810,7 +797,7 @@
                 slotInfo,
                 callbacks,
             }) {
-                console.assert(!this.secondaryHalf);
+                console.assert(!this.secondaryHalf?.callbacks);
                 if (this.logic) {
                     if (!logicEqual(this.logic, { nonce, logic })) {
                         if (this.primaryHalf?.callbacks) {
@@ -823,36 +810,136 @@
                 } else {
                     this.logic = { nonce, logic };
                 }
-                this.secondaryHalf = new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.primaryHalf; })
+                this.secondaryHalf = new HalfGameState(slotInfo, spoilers, dataPackages, callbacks, () => { return this.primaryHalf; });
+                this.onrepaint();
                 return this.secondaryHalf;
             }
         };
 
-        const pastConnection = new LogicPair();
-        const futureConnection = new LogicPair();
+        function bindServerInput(rootElement) {
+            const addressInput = rootElement.querySelector("input.server-address");
+            const slotNameInput = rootElement.querySelector("input.username");
+            const passwordInput = rootElement.querySelector("input.password");
+            const button = rootElement.querySelector("button");
+            const statusWindow = rootElement.querySelector(".connection-info");
+            let buttonSaysConnect = true;
+            let connect = null;
 
+            button.addEventListener("click", () => {
+                connect?.(buttonSaysConnect ?
+                    {
+                        url: addressInput.value,
+                        slotName: slotNameInput.value,
+                        password: passwordInput.value,
+                    } :
+                    null
+                );
+                updateLocationFragment()
+            });
+
+            return {
+                onurlchange: (connectionTarget) => {
+                    if (connectionTarget) {
+                        addressInput.disabled = true;
+                        slotNameInput.disabled = true;
+                        passwordInput.disabled = true;
+                        button.innerText = "Disconnect";
+                        buttonSaysConnect = false;
+                    } else {
+                        addressInput.disabled = false;
+                        slotNameInput.disabled = false;
+                        passwordInput.disabled = false;
+                        button.innerText = "Connect";
+                        buttonSaysConnect = true;
+                    }
+                },
+                onstatechange: (kind, description) => {
+                    statusWindow.innerText = description;
+                },
+                setconnect: (listener) => { connect = listener; },
+                updatevalues: ({ url, slotName, password }) => {
+                    addressInput.value = url ?? '';
+                    slotNameInput.value = slotName ?? '';
+                    passwordInput.value = password ?? '';
+                },
+            };
+        };
+
+        const pastConnection = new LogicPair(() => {
+            // TODO: repaint
+        });
+        const futureConnection = new LogicPair(() => {
+            // TODO: repaint
+        });
+
+        const pastCallbacks = bindServerInput(document.getElementById("past-server"));
         const pastSlot = new ServerSlot({
-            onurlchange: () => { },
-            onstatechange: (kind, description) => { },
+            ...pastCallbacks,
             connectPast: null,
             connectFuture: pastConnection.connectSecondary.bind(pastConnection),
         });
-        const futureSlot = new ServerSlot({
-            onurlchange: () => { },
-            onstatechange: (kind, description) => { },
-            connectPast: futureConnection.connectSecondary.bind(futureConnection),
-            connectFuture: null,
-        });
+        const presentCallbacks = bindServerInput(document.getElementById("present-server"));
         const presentSlot = new ServerSlot({
-            onurlchange: () => { },
-            onstatechange: (kind, description) => { },
+            ...presentCallbacks,
             connectPast: pastConnection.connectPrimary.bind(pastConnection),
             connectFuture: futureConnection.connectPrimary.bind(futureConnection),
         });
+        const futureCallbacks = bindServerInput(document.getElementById("future-server"));
+        const futureSlot = new ServerSlot({
+            ...futureCallbacks,
+            connectPast: futureConnection.connectSecondary.bind(futureConnection),
+            connectFuture: null,
+        });
 
-        const handleHashChange = () => {
-            // TODO: parse location.hash
+
+        // Need to encode + & # in fragment after encodeURI()
+        function myFragmentEncode(string) {
+            const partial = encodeURI(string);
+            return partial.replace(/[#&+]/g, encodeURIComponent);
+        }
+
+        const slotFragmentParams = [
+            [{ url: "s1", slotName: "u1", password: "p1" }, pastCallbacks, pastSlot],
+            [{ url: "s2", slotName: "u2", password: "p2" }, presentCallbacks, presentSlot],
+            [{ url: "s3", slotName: "u3", password: "p3" }, futureCallbacks, futureSlot],
+        ];
+
+        function updateLocationFragment() {
+            const activeServers = [];
+            for (const [paramNames, _, slot] of slotFragmentParams) {
+                if (!slot.connectionTarget) continue;
+                const params = [
+                    `${paramNames.url}=${myFragmentEncode(slot.connectionTarget.url)}`,
+                    `${paramNames.slotName}=${myFragmentEncode(slot.connectionTarget.slotName)}`,
+                ];
+                if (slot.connectionTarget.password !== "") {
+                    params.push(`${paramNames.password}=${myFragmentEncode(slot.connectionTarget.password)}`);
+                }
+                activeServers.push(params.join("&"));
+            }
+            history.replaceState(null, "", "#" + activeServers.join("&"));
+        }
+
+        function handleHashChange() {
+            const params = new URLSearchParams(location.hash.slice(1));
+            for (const [paramNames, { updatevalues }, slot] of slotFragmentParams) {
+                const settings = {
+                    url: params.get(paramNames.url),
+                    slotName: params.get(paramNames.slotName),
+                    password: params.get(paramNames.password) ?? '',
+                };
+                updatevalues(settings);
+                if (settings.url !== null && settings.slotName !== null) {
+                    slot.connect(settings);
+                } else {
+                    slot.connect(null);
+                }
+            }
         };
+
+        handleHashChange();
+
+        addEventListener("hashchange", handleHashChange);
     </script>
 </body>
 
